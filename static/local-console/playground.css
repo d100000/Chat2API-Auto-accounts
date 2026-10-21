@@ -1,0 +1,109 @@
+/* Playground metrics extend the shared workspace tokens. */
+.console-page {
+  --sidebar-width: 284px;
+  --chat-min-height: 350px;
+  --chat-max-height: 560px;
+  --chat-mobile-height: 360px;
+  --endpoint-control-height: 36px;
+  --request-status-size: 6px;
+}
+.console-page .console-layout { align-items: start; }
+.request-options > summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+  padding: var(--space-4) var(--panel-padding);
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--type-sm);
+  font-weight: 600;
+}
+.request-options > summary::-webkit-details-marker { display: none; }
+.request-options > summary::after { display: none; }
+.request-options > summary:hover { background: var(--color-subtle); }
+.request-options[open] > summary { border-bottom: 1px solid var(--color-border); }
+.configuration-summary {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-muted);
+  font-size: var(--type-xs);
+  font-weight: 400;
+}
+.request-options .details-chevron { margin-left: auto; transition: transform var(--motion-normal) var(--ease-out); }
+.request-options[open] .details-chevron { transform: rotate(180deg); }
+.console-page .settings-section { padding: var(--space-5); }
+.console-page .settings-section h2 { font-size: var(--type-sm); margin-bottom: var(--space-3); }
+.console-page .settings-section .field { margin-bottom: var(--space-4); }
+.console-page .connection-stats { margin-bottom: var(--space-4); }
+.console-page .connection-stats dd { font-size: var(--type-lg); }
+.console-page .settings-section .field:last-of-type { margin-bottom: var(--space-4); }
+.console-page .toggle-field { margin-bottom: 0; }
+.endpoint-label { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.endpoint-copy { min-height: var(--endpoint-control-height); padding: var(--space-1) var(--space-2); font-size: var(--type-xs); }
+.console-page .endpoint-block code { color: var(--color-text); margin-top: 0; }
+.console-page .refresh-button { min-height: var(--control-height); padding-left: var(--space-2); margin-left: calc(-1 * var(--space-2)); }
+.console-page .refresh-button:hover:not(:disabled) { text-decoration: none; background: var(--color-subtle); }
+.console-page .chat-header { gap: var(--space-3); }
+.chat-header-actions { display: flex; align-items: center; gap: var(--space-2); }
+.console-page .chat-heading { flex-wrap: wrap; }
+.console-page .empty-state { padding: var(--space-6) var(--space-4); }
+.console-page .empty-symbol { border-radius: var(--radius-lg); margin-bottom: var(--space-4); }
+.console-page .empty-caption { margin-top: var(--space-5); }
+.console-page .message-tools { flex-wrap: wrap; }
+.console-page .copy-button, .console-page .raw-response summary { min-height: var(--button-height); display: inline-flex; align-items: center; }
+.console-page .raw-response summary { border-radius: var(--radius-sm); }
+.console-page .raw-response summary:hover { background: var(--color-subtle); color: var(--color-text); }
+.console-page .request-state { display: inline-flex; align-items: center; gap: var(--space-2); }
+.console-page .request-state::before { content: ""; width: var(--request-status-size); height: var(--request-status-size); border-radius: 50%; background: currentColor; flex: none; }
+.console-page .request-state[data-state="loading"]::before { animation: request-pulse 1.3s ease-in-out infinite; }
+.console-page .composer-area textarea { padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.console-page .composer-area textarea:hover:not(:read-only) { border-color: var(--color-border-strong); }
+.console-page .composer-area textarea:focus { outline: 2px solid var(--color-focus); outline-offset: 2px; border-color: var(--color-focus); box-shadow: none; }
+.console-page .composer-actions { margin-top: var(--space-3); }
+.console-page .composer-actions kbd { padding: var(--space-1); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-subtle); white-space: nowrap; }
+.console-page [aria-invalid="true"] { border-color: var(--color-error); }
+@keyframes request-pulse { 50% { opacity: .35; } }
+@media (max-width: 1000px) {
+  .console-page { --sidebar-width: 260px; }
+  .console-page .chat-header { align-items: start; }
+}
+@media (max-width: 760px) {
+  .console-page { --endpoint-control-height: 44px; --chat-min-height: 220px; }
+  .console-page .page-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-2) var(--space-3); }
+  .console-page .page-heading > div { display: contents; }
+  .console-page .page-heading .eyebrow, .console-page .page-description { grid-column: 1 / -1; margin: 0; }
+  .console-page .page-heading h1 { grid-column: 1; grid-row: 2; }
+  .console-page .page-heading .status-pill { grid-column: 2; grid-row: 2; }
+  .console-page .empty-state { padding: var(--space-4); }
+  .console-page .empty-caption { display: none; }
+  .console-page .settings-panel { display: block; }
+  .configuration-summary { margin-left: auto; max-width: 45%; }
+  .request-options .details-chevron { margin-left: var(--space-2); }
+  .request-options-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .console-page .chat-header { align-items: center; }
+  .console-page .chat-messages { padding: var(--space-4) var(--panel-padding); }
+  .console-page .empty-state { min-height: calc(var(--chat-min-height) - var(--space-4) * 2); }
+}
+@media (max-width: 480px) {
+  .request-options-body { display: block; }
+  .console-page .chat-header { align-items: start; }
+  .console-page .chat-heading { flex-direction: column; align-items: start; gap: 0; }
+  .chat-header-actions { gap: var(--space-1); }
+  .chat-header-actions .button { padding-right: var(--space-3); padding-left: var(--space-3); }
+  .console-page .message { column-gap: var(--space-2); }
+  .console-page .message-tools { display: block; }
+  .console-page .request-summary { column-gap: var(--space-2); }
+  .console-page .composer-actions { align-items: center; }
+  .console-page .composer-actions > .field-hint { font-size: var(--type-xs); }
+  .desktop-key-hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .console-page .request-state[data-state="loading"]::before { animation: none; }
+}
+
+@media (max-width: 359px) { .console-page .page-heading h1 { font-size: var(--type-lg); } }

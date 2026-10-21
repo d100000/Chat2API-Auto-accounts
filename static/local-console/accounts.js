@@ -45,6 +45,7 @@
   let pollTimer = null;
   let pollCount = 0;
   let loadWaiters = [];
+  let schedulerEventsSignature = null;
 
   byId('display-timezone').textContent = `时间按 ${dateFormat.resolvedOptions().timeZone} 显示。`;
 
@@ -157,6 +158,13 @@
   function renderSchedulerEvents() {
     const rawEvents = state.snapshot?.scheduler?.events;
     const events = Array.isArray(rawEvents) ? rawEvents.filter((event) => event && typeof event === 'object').sort((left, right) => (timestamp(right.at) || 0) - (timestamp(left.at) || 0)).slice(0, 20) : [];
+    const signature = JSON.stringify(events.map((event) => [event.at, schedulerEventText(event), event.reason ? schedulerReason(event.reason) : '']));
+    byId('scheduler-events-empty').hidden = events.length > 0;
+    byId('scheduler-latest-event').textContent = events.length ? schedulerEventText(events[0]) : state.snapshot ? '尚无调度记录' : '等待调度记录';
+    if (signature === schedulerEventsSignature) return;
+    schedulerEventsSignature = signature;
+    const list = byId('scheduler-event-list');
+    const previousScroll = list.scrollTop;
     const fragment = document.createDocumentFragment();
     events.forEach((event) => {
       const item = el('li', 'scheduler-event');
@@ -167,9 +175,8 @@
       if (event.reason) content.append(el('p', 'field-hint', schedulerReason(event.reason)));
       item.append(stamp, content); fragment.append(item);
     });
-    byId('scheduler-event-list').replaceChildren(fragment);
-    byId('scheduler-events-empty').hidden = events.length > 0;
-    byId('scheduler-latest-event').textContent = events.length ? schedulerEventText(events[0]) : state.snapshot ? '尚无调度记录' : '等待调度记录';
+    list.replaceChildren(fragment);
+    list.scrollTop = previousScroll;
   }
 
   function featureExpired(feature) {
@@ -235,13 +242,16 @@
     ui['refresh-all'].disabled = !state.snapshot || list.length === 0 || list.every((account) => Boolean(refreshReason(account)));
     ui['refresh-all'].textContent = state.busy === '*' ? '正在刷新额度…' : state.busy ? '账号刷新中…' : '刷新全部额度 ↻';
     ui['reload-accounts'].disabled = (state.loading && !state.quietLoading) || Boolean(state.busy) || state.expired;
-    ui['reload-accounts'].textContent = state.loading && !state.quietLoading ? '载入中…' : '重新载入';
+    ui['reload-accounts'].textContent = state.loading && !state.quietLoading ? '载入中…' : '更新本地视图';
+    ui['refresh-all'].setAttribute('aria-busy', String(state.busy === '*'));
+    ui['reload-accounts'].setAttribute('aria-busy', String(state.loading && !state.quietLoading));
     ui['accounts-rows'].querySelectorAll('[data-refresh-account]').forEach((button) => {
       const account = list.find((item) => item.id === button.dataset.refreshAccount);
       if (!account) return;
       const reason = refreshReason(account);
       button.disabled = Boolean(reason);
       button.textContent = reason || '刷新额度';
+      button.setAttribute('aria-busy', String(state.busy === '*' || state.busy === account.id || account.refresh?.status === 'in_progress'));
     });
   }
 
@@ -276,7 +286,7 @@
     if (finite(feature?.total) || finite(feature?.used)) {
       const parts = [finite(feature?.total) ? `总量 ${count(feature.total)}` : null, finite(feature?.used) ? `已用 ${count(feature.used)}` : null].filter(Boolean);
       box.append(el('span', 'quota-note', parts.join(' · ')));
-    } else if (finite(feature?.remaining)) box.append(el('span', 'quota-note', '总量未提供'));
+    }
     if (feature?.blocked === true) box.append(el('span', 'quota-note is-warning', '上游标记受限'));
     appendReset(box, feature);
     return box;
@@ -414,7 +424,7 @@
     return grid;
   }
 
-  function renderRows() {
+  function renderRows(revealedId = null) {
     const focusKey = document.activeElement?.dataset?.focusKey;
     timeUpdaters = [];
     const fragment = document.createDocumentFragment();
@@ -449,22 +459,33 @@
       refreshButton.type = 'button'; refreshButton.dataset.refreshAccount = account.id; refreshButton.dataset.focusKey = `refresh:${account.id}`;
       refreshButton.setAttribute('aria-label', `刷新 ${account.label || '该账号'} 的额度`);
       refreshButton.addEventListener('click', () => { void refreshAccounts(account.id); });
-      const detailsButton = el('button', 'button button-secondary', isExpanded ? '收起详情 ↑' : '展开详情 ↓');
+      const detailsButton = el('button', 'button button-secondary details-toggle');
+      const chevron = el('span', 'details-chevron'); chevron.setAttribute('aria-hidden', 'true');
+      detailsButton.append(el('span', '', isExpanded ? '收起详情' : '展开详情'), chevron);
       detailsButton.type = 'button'; detailsButton.dataset.focusKey = `details:${account.id}`;
       detailsButton.setAttribute('aria-expanded', String(isExpanded)); detailsButton.setAttribute('aria-controls', `account-details-${index}`);
       detailsButton.addEventListener('click', () => {
         const expanded = state.expanded.has(account.id) ? new Set([...state.expanded].filter((id) => id !== account.id)) : new Set([...state.expanded, account.id]);
-        state = { ...state, expanded }; renderRows();
+        state = { ...state, expanded }; renderRows(expanded.has(account.id) ? account.id : null);
       });
       actions.append(refreshButton, detailsButton); cells[6].append(actions); row.append(...cells); fragment.append(row);
       const detailRow = el('tr', 'account-detail-row'); detailRow.id = `account-details-${index}`; detailRow.hidden = !isExpanded;
-      if (isExpanded) { const cell = el('td'); cell.colSpan = 7; cell.append(accountDetails(account)); detailRow.append(cell); }
+      if (isExpanded) {
+        const cell = el('td'); cell.colSpan = 7;
+        const details = accountDetails(account);
+        details.classList.toggle('is-entering', account.id === revealedId);
+        cell.append(details); detailRow.append(cell);
+      }
       fragment.append(detailRow);
     });
     ui['accounts-rows'].replaceChildren(fragment);
     ui['accounts-table-wrap'].hidden = filtered.length === 0;
     ui['accounts-empty'].hidden = !state.snapshot || filtered.length > 0;
-    byId('accounts-count').textContent = state.snapshot ? `${filtered.length} / ${accounts().length} 个账号` : '尚未载入';
+    const resultCount = state.snapshot ? `${filtered.length} / ${accounts().length} 个账号` : '尚未载入';
+    if (byId('accounts-count').textContent !== resultCount) byId('accounts-count').textContent = resultCount;
+    const activeFilters = [state.query ? `标签含「${state.query}」` : '', state.filter !== 'all' ? statusLabels[state.filter] : ''].filter(Boolean);
+    byId('account-filter-feedback').hidden = activeFilters.length === 0;
+    byId('active-account-filters').textContent = activeFilters.join(' · ');
     const noAccounts = accounts().length === 0;
     byId('empty-title').textContent = noAccounts ? '还没有导入账号' : '没有匹配的账号';
     byId('empty-description').textContent = noAccounts ? '导入账号凭据后，即可查询额度与查看本地使用情况。' : '试试其他关键词，或清除状态筛选。';
@@ -505,7 +526,7 @@
   function schedulePoll() {
     if (pollTimer) window.clearTimeout(pollTimer);
     if (state.expired || !accounts().some((account) => account.refresh?.status === 'in_progress')) { pollCount = 0; return; }
-    if (pollCount >= 60) { feedback('后台刷新仍未完成，可稍后点击「重新载入」查看结果。'); return; }
+    if (pollCount >= 60) { feedback('后台刷新仍未完成，可稍后点击「更新本地视图」查看结果。'); return; }
     pollTimer = window.setTimeout(() => { pollCount += 1; void loadAccounts(true); }, 2000);
   }
 
@@ -551,7 +572,13 @@
 
   ui['account-search'].addEventListener('input', () => { state = { ...state, query: ui['account-search'].value.trim() }; renderRows(); });
   ui['account-status-filter'].addEventListener('change', () => { state = { ...state, filter: ui['account-status-filter'].value }; renderRows(); });
-  byId('clear-filters').addEventListener('click', () => { state = { ...state, query: '', filter: 'all' }; ui['account-search'].value = ''; ui['account-status-filter'].value = 'all'; renderRows(); ui['account-search'].focus(); });
+  function clearFilters() {
+    state = { ...state, query: '', filter: 'all' };
+    ui['account-search'].value = ''; ui['account-status-filter'].value = 'all';
+    renderRows(); ui['account-search'].focus();
+  }
+  byId('clear-filters').addEventListener('click', clearFilters);
+  byId('reset-account-filters').addEventListener('click', clearFilters);
   ui['reload-accounts'].addEventListener('click', () => { pollCount = 0; void loadAccounts(); });
   ui['refresh-all'].addEventListener('click', () => { void refreshAccounts(); });
   ui['accounts-logout'].addEventListener('click', async () => {

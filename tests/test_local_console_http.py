@@ -82,11 +82,11 @@ class LocalConsoleHTTPTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
         (cls.workdir / "templates").mkdir()
-        for filename in ("local_console.html", "local_console_login.html", "local_accounts.html", "tokens.html"):
+        for filename in ("local_console.html", "local_console_login.html", "local_accounts.html", "tokens.html", "_workspace_header.html"):
             shutil.copy2(ROOT / "templates" / filename, cls.workdir / "templates" / filename)
         assets = cls.workdir / "static/local-console"
         assets.mkdir(parents=True)
-        for filename in ("console.css", "console.js", "login.js", "accounts.css", "accounts.js"):
+        for filename in ("console.css", "console.js", "login.js", "accounts.css", "accounts.js", "ui.js", "playground.css", "tokens.css", "tokens.js"):
             shutil.copy2(ROOT / "static/local-console" / filename, assets / filename)
         (cls.workdir / ".env").write_text("", encoding="ascii")
         (cls.workdir / "data").mkdir()

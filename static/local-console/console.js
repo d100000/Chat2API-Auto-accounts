@@ -5,7 +5,8 @@
     'chat-form', 'prompt', 'model', 'max-tokens', 'stream', 'send-button', 'stop-button',
     'clear-button', 'quick-test', 'chat-messages', 'empty-state', 'turn-count', 'page-error',
     'request-state', 'request-time', 'request-http', 'first-token-time', 'service-status',
-    'service-status-text', 'refresh-session', 'logout-button',
+    'service-status-text', 'refresh-session', 'logout-button', 'request-options', 'copy-endpoint',
+    'configuration-summary',
   ].map((id) => [id, byId(id)]));
   const QUICK_PROMPT = '请只回复 OK。';
   const MAX_RAW_CHARS = 200000;
@@ -16,6 +17,23 @@
   let requestSequence = 0;
 
   byId('shortcut-label').textContent = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘ Enter' : 'Ctrl + Enter';
+  // Keep the conversation within reach on small screens; this is still a native,
+  // keyboard-accessible disclosure and the user's later choice is left intact.
+  if (window.matchMedia('(max-width: 760px)').matches) ui['request-options'].open = false;
+
+  function updateConfigurationSummary() {
+    const model = ui.model.value.trim() || '未设置模型';
+    const label = `${model} · ${ui.stream.checked ? '流式' : '完整响应'}`;
+    ui['configuration-summary'].textContent = label;
+    ui['configuration-summary'].title = label;
+  }
+
+  function invalidConfiguration(field, message) {
+    ui['request-options'].open = true;
+    field.setAttribute('aria-invalid', 'true');
+    setError(message);
+    field.focus();
+  }
 
   function setError(message = '') {
     ui['page-error'].textContent = message;
@@ -25,7 +43,8 @@
   function updateControls() {
     const pending = Boolean(active);
     ui['send-button'].disabled = pending || !sessionReady || !ui.prompt.value.trim();
-    ui['send-button'].textContent = pending ? '正在接收…' : '发送消息 ↑';
+    ui['send-button'].textContent = pending ? (active.firstTokenAt === null ? '等待回复…' : '正在接收…') : '发送消息 ↑';
+    ui['send-button'].setAttribute('aria-busy', String(pending));
     ui['quick-test'].disabled = pending || !sessionReady;
     ui['clear-button'].disabled = pending || !ui['chat-messages'].querySelector('.exchange');
     ui['stop-button'].hidden = !pending;
@@ -62,6 +81,8 @@
     if (refreshing) return;
     refreshing = true;
     ui['refresh-session'].disabled = true;
+    ui['refresh-session'].setAttribute('aria-busy', 'true');
+    ui['refresh-session'].textContent = '正在刷新…';
     ui['service-status'].dataset.state = 'loading';
     ui['service-status-text'].textContent = '正在连接本地服务';
     const controller = new AbortController();
@@ -88,6 +109,8 @@
       window.clearTimeout(timeout);
       refreshing = false;
       ui['refresh-session'].disabled = false;
+      ui['refresh-session'].setAttribute('aria-busy', 'false');
+      ui['refresh-session'].textContent = '刷新状态 ↻';
       updateControls();
     }
   }
@@ -156,6 +179,7 @@
       request.firstTokenAt = performance.now();
       ui['first-token-time'].textContent = `首字 ${duration(request.firstTokenAt - request.startedAt)}`;
       setRequestState('正在接收', 'loading');
+      updateControls();
     }
     request.answer += text;
     request.view.content.textContent = request.answer;
@@ -250,8 +274,8 @@
     const model = ui.model.value.trim();
     const maxTokens = Number(ui['max-tokens'].value);
     if (!prompt) { ui.prompt.focus(); return; }
-    if (!model) { setError('请输入模型名称，例如 auto。'); ui.model.focus(); return; }
-    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 4096) { setError('最大输出 Token 需要是 1–4096 的整数。'); ui['max-tokens'].focus(); return; }
+    if (!model) { invalidConfiguration(ui.model, '请输入模型名称，例如 auto。'); return; }
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 4096) { invalidConfiguration(ui['max-tokens'], '最大输出 Token 需要是 1–4096 的整数。'); return; }
     if (quick && !ui.prompt.value.trim()) ui.prompt.value = QUICK_PROMPT;
     const originalInput = ui.prompt.value;
     const stream = ui.stream.checked;
@@ -278,13 +302,8 @@
     const timeout = window.setTimeout(() => { timedOut = true; request.controller.abort(); }, 300000);
     updateControls();
     request.view.copy.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(request.answer);
-        request.view.copy.textContent = '已复制';
-        window.setTimeout(() => { request.view.copy.textContent = '复制回复'; }, 1800);
-      } catch (_) {
-        setError('自动复制失败，请选中回复文字后手动复制。');
-      }
+      const copied = await window.ConsoleUI.copyText(request.answer, request.view.copy);
+      if (!copied) setError('自动复制失败，请选中回复文字后手动复制。');
     });
     try {
       const response = await fetch('/local-console/chat', {
@@ -363,6 +382,16 @@
       void sendMessage();
     }
   });
+  for (const name of ['model', 'max-tokens']) {
+    ui[name].addEventListener('input', () => {
+      ui[name].removeAttribute('aria-invalid');
+      updateConfigurationSummary();
+    });
+  }
+  ui.stream.addEventListener('change', updateConfigurationSummary);
+  ui['copy-endpoint'].addEventListener('click', async () => {
+    await window.ConsoleUI.copyText(byId('base-url').textContent, ui['copy-endpoint']);
+  });
   ui['quick-test'].addEventListener('click', () => { void sendMessage(true); });
   ui['refresh-session'].addEventListener('click', () => { void refreshSession(); });
   ui['stop-button'].addEventListener('click', () => {
@@ -384,6 +413,7 @@
     setError();
     updateControls();
     ui.prompt.focus();
+    window.ConsoleUI.toast('当前页面的对话已清空。');
   });
   ui['logout-button'].addEventListener('click', async () => {
     ui['logout-button'].disabled = true;
@@ -397,6 +427,7 @@
       ui['logout-button'].disabled = false;
     }
   });
+  updateConfigurationSummary();
   updateControls();
   void refreshSession();
 })();

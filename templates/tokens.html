@@ -1,83 +1,101 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta content="width=device-width, initial-scale=1.0" name="viewport">
-    <title>Tokens 管理</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-        document.addEventListener('DOMContentLoaded', () => {
-            const apiPrefix = "{{ api_prefix }}";
-            const uploadForm = document.getElementById('uploadForm');
-            const clearForm = document.getElementById('clearForm');
-            const errorButton = document.getElementById('errorButton');
-
-            if (apiPrefix === "None") {
-                uploadForm.action = "/tokens/upload";
-                clearForm.action = "/tokens/clear";
-                errorButton.dataset.api = "/tokens/error";
-            } else {
-                uploadForm.action = `/${apiPrefix}/tokens/upload`;
-                clearForm.action = `/${apiPrefix}/tokens/clear`;
-                errorButton.dataset.api = `/${apiPrefix}/tokens/error`;
-            }
-
-            errorButton.addEventListener('click', async () => {
-                const response = await fetch(errorButton.dataset.api, {
-                    method: 'POST',
-                });
-                const result = await response.json();
-                const errorTokens = result.error_tokens;
-
-                const errorModal = document.getElementById('errorModal');
-                const errorModalContent = document.getElementById('errorModalContent');
-
-                errorModalContent.innerHTML = errorTokens.map(token => `<p>${token}</p>`).join('');
-                errorModal.classList.remove('hidden');
-            });
-
-            document.getElementById('errorModalClose').addEventListener('click', () => {
-                document.getElementById('errorModal').classList.add('hidden');
-            });
-
-            document.getElementById('errorModalCopy').addEventListener('click', () => {
-                const errorModalContent = document.getElementById('errorModalContent');
-                const textToCopy = errorModalContent.innerText.replace(/\n\n/g, '\n');
-                navigator.clipboard.writeText(textToCopy).then(() => {
-                    alert('错误 Tokens 已复制到剪贴板');
-                }).catch(err => {
-                    alert('复制失败，请手动复制');
-                });
-            });
-        });
-    </script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>凭据管理 · Chat2API</title>
+  <link rel="stylesheet" href="/static/local-console/console.css?v=20261021">
+  <link rel="stylesheet" href="/static/local-console/tokens.css?v=20261021">
+  <script src="/static/local-console/ui.js?v=20261021" defer></script>
+  <script src="/static/local-console/tokens.js?v=20261021" defer></script>
 </head>
-<body class="bg-gradient-to-r from-blue-200 via-purple-200 to-pink-200 flex justify-center items-center min-h-screen">
-    <div class="bg-white p-10 rounded-lg shadow-2xl w-128 text-center">
-        <nav class="flex justify-center gap-6 mb-6 text-sm" aria-label="本地工作区导航"><a class="text-green-800 underline" href="/accounts">账号与额度</a><a class="text-green-800 underline" href="/playground">返回测试台</a></nav>
-        <h1 class="text-4xl font-extrabold text-gray-900 mb-6">Tokens 管理</h1>
-        <p class="text-gray-600 mb-4">当前可用 Tokens 数量：<span class="text-blue-600">{{ tokens_count }}</span></p>
-        <form class="mb-2" id="uploadForm" method="post">
-            <textarea class="w-full p-4 mb-4 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none" name="text" placeholder="一行一个Token，可以是 AccessToken 或 RefreshToken" rows="10"></textarea>
-            <p class="text-gray-600 mb-2">注：使用docker时如果挂载了data文件夹则重启后不需要再次上传</p>
-            <button class="w-full bg-blue-600 text-white py-3 rounded-md hover:bg-blue-700 transition duration-300 mb-2" type="submit">上传</button>
-        </form>
-        <button id="errorButton" class="w-full bg-yellow-600 text-white py-3 rounded-md hover:bg-yellow-700 transition duration-200 mt-2">查看错误Tokens</button>
-        <p class="text-gray-600 mt-2">点击清空，将会清空上传和错误的 Tokens</p>
-        <form id="clearForm" method="post">
-            <button class="w-full bg-red-600 text-white py-3 rounded-md hover:bg-red-700 transition duration-300" type="submit">清空Tokens</button>
-        </form>
+<body class="tokens-page" data-api-prefix="{{ api_prefix or '' }}">
+  <a class="skip-link" href="#token-input">跳到凭据输入</a>
+  {% with active_page='tokens', logout_id='tokens-logout' %}{% include '_workspace_header.html' %}{% endwith %}
+  <main class="workspace tokens-workspace">
+    <div class="page-heading">
+      <div>
+        <p class="eyebrow">工作区 / 导入凭据</p>
+        <h1>凭据管理</h1>
+        <p class="page-description">导入账号凭据，维护本地可调度的账号池。</p>
+      </div>
+      <a class="button button-secondary" href="/accounts">查看账号额度 <span aria-hidden="true">↗</span></a>
     </div>
 
-    <div id="errorModal" class="fixed inset-0 bg-gray-800 bg-opacity-75 flex justify-center items-center hidden">
-        <div class="bg-white p-6 rounded-lg shadow-lg w-150">
-            <h2 class="text-2xl font-bold mb-4">错误 Tokens</h2>
-            <div id="errorModalContent" class="list-disc list-inside text-left mb-4"></div>
-            <div class="flex justify-end space-x-4">
-                <button id="errorModalCopy" class="bg-green-600 text-white py-2 px-4 rounded-md hover:bg-green-700 transition duration-300">复制</button>
-                <button id="errorModalClose" class="bg-red-600 text-white py-2 px-4 rounded-md hover:bg-red-700 transition duration-300">关闭</button>
+    <div id="tokens-error" class="notice notice-error" role="alert" hidden></div>
+    <div id="tokens-feedback" class="notice tokens-feedback" role="status" aria-live="polite" hidden></div>
+    <p id="tokens-session-expired" class="notice notice-error" role="alert" hidden>登录已过期，请<a href="/login">重新登录</a>后继续。</p>
+
+    <div class="tokens-layout">
+      <section class="tokens-panel tokens-import" aria-labelledby="import-title">
+        <header class="tokens-panel-header">
+          <h2 id="import-title">导入凭据</h2>
+          <p class="field-hint">每行一条 AccessToken 或 RefreshToken，支持批量粘贴。</p>
+        </header>
+        <form id="uploadForm" class="tokens-import-form" method="post" action="{{ '/' ~ api_prefix if api_prefix else '' }}/tokens/upload">
+          <div class="field">
+            <div class="tokens-field-label">
+              <label for="token-input">账号凭据</label>
+              <span id="token-line-count" class="subtle-label" aria-live="polite">0 条待导入</span>
             </div>
-        </div>
+            <textarea id="token-input" name="text" rows="9" required spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off" aria-describedby="token-input-hint" placeholder="在这里粘贴凭据，每行一条"></textarea>
+            <p id="token-input-hint" class="field-hint">空行与以 # 开头的注释行会被忽略。请勿粘贴账号密码或整份账号 JSON。</p>
+          </div>
+          <div class="tokens-submit-row">
+            <p class="field-hint">导入后，到账号额度页检查账号状态。</p>
+            <button id="token-upload" class="button button-primary" type="submit">导入凭据 <span aria-hidden="true">↑</span></button>
+          </div>
+        </form>
+        <footer class="tokens-storage-note"><span class="status-dot" aria-hidden="true"></span><p>凭据保存在本机 data 目录。输入内容不会写入浏览器存储。</p></footer>
+      </section>
+
+      <aside class="tokens-maintenance" aria-label="账号池维护">
+        <section class="tokens-pool" aria-labelledby="pool-title">
+          <h2 id="pool-title">本地账号池</h2>
+          <p class="tokens-pool-count"><strong id="token-count">{{ tokens_count }}</strong><span>条候选凭据</span></p>
+          <p class="field-hint">已排除已知错误凭据；此数量不代表实时可用账号数。</p>
+          <button id="errorButton" class="button button-secondary button-full" type="button" aria-controls="error-tokens-section" aria-expanded="false">查看错误凭据</button>
+        </section>
+        <section class="tokens-danger-zone" aria-labelledby="clear-title">
+          <h2 id="clear-title">清空凭据</h2>
+          <p class="field-hint">移除全部已导入凭据和错误记录。账号池将暂时无法接收新请求，需重新导入后恢复。</p>
+          <button id="token-clear" class="button button-danger-quiet" type="button">清空全部凭据</button>
+        </section>
+      </aside>
     </div>
+
+    <section id="error-tokens-section" class="tokens-panel tokens-errors" aria-labelledby="errors-title" hidden>
+      <header class="tokens-errors-header">
+        <div>
+          <h2 id="errors-title">错误凭据 <span id="error-token-count" class="subtle-label"></span></h2>
+          <p class="field-hint">默认隐藏内容；复制操作会复制完整的原始凭据。</p>
+        </div>
+        <div id="error-token-actions" class="tokens-error-actions" hidden>
+          <button id="error-token-reveal" class="button button-quiet" type="button" aria-pressed="false">显示凭据</button>
+          <button id="error-token-copy" class="button button-secondary" type="button">复制原始凭据</button>
+        </div>
+      </header>
+      <p id="error-tokens-empty" class="tokens-empty" hidden>没有记录到错误凭据。</p>
+      <ol id="error-token-list" class="token-list" aria-label="错误凭据列表"></ol>
+    </section>
+
+    <noscript><p class="notice notice-error">请启用 JavaScript 后管理凭据。</p></noscript>
+  </main>
+
+  <dialog id="clear-dialog" class="tokens-dialog" aria-labelledby="clear-dialog-title" aria-describedby="clear-dialog-description">
+    <form id="clearForm" method="dialog">
+      <div class="tokens-dialog-content">
+        <span class="tokens-dialog-symbol" aria-hidden="true">!</span>
+        <h2 id="clear-dialog-title">清空全部账号凭据？</h2>
+        <p id="clear-dialog-description">将移除已导入凭据和错误记录，无法在后台撤销。请确认已在其他位置保存需要的凭据。</p>
+        <p id="clear-dialog-error" class="notice notice-error" role="alert" hidden></p>
+      </div>
+      <div class="tokens-dialog-actions">
+        <button id="clear-cancel" class="button button-secondary" type="button" autofocus>保留凭据</button>
+        <button id="clear-confirm" class="button button-danger" type="submit">确认清空</button>
+      </div>
+    </form>
+  </dialog>
 </body>
 </html>

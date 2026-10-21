@@ -149,7 +149,7 @@ python scripts/local_service.py stop
 | 上游额度快照 | `chatgpt/account_quota.py` → `data/account_quota.json` | 只读查询 ChatGPT 网页 `POST /backend-api/conversation/init`，保留允许的额度字段；不发送聊天或生图消息 |
 | 本地请求账本 | `chatgpt/account_usage.py` → `data/account_usage.sqlite3` | 记录经过本机服务的每次账号执行尝试；重试单独计数，不回填启用前的历史 |
 | 账号调度 | `chatgpt/account_scheduler.py`、`chatgpt/scheduling.py` → `data/account_scheduler.json` | 选择账号、预留并发容量、记录临时扣减与阻断状态；在安全条件下切换账号 |
-| 管理页面 | `/accounts`、`api/local_console.py` | 合并快照、账本和调度状态；“重新载入”读取本地记录，“刷新额度”请求上游元数据 |
+| 管理页面 | `/accounts`、`api/local_console.py` | 合并快照、账本和调度状态；“更新本地视图”读取本地记录，“刷新额度”请求上游元数据 |
 
 这些数据文件均保存在私有 `data/` 目录，文件权限为 `0600`。额度缓存与调度状态只使用匿名账号标识；调度状态和用量账本不保存 Token、提示词、回复正文、图片 URL 或原始错误正文。不要把运行时 `data/` 提交到仓库。
 
@@ -282,10 +282,13 @@ docker compose down
 
 ## 开发验证
 
+界面由 Jinja 模板和本地 JavaScript / CSS 构成，四个工作区页面共用导航、控件、颜色和动效。交互与适配约定见 [界面设计规范](DESIGN.md)。无需安装前端构建工具，也不依赖外部样式 CDN。
+
 安装依赖后，可运行全部离线测试：
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py' -v
+for file in static/local-console/*.js; do node --check "$file"; done
 ```
 
 测试使用合成账号、临时缓存与数据库；HTTP 测试在临时目录启动独立服务并拦截上游请求，不读取真实账号文件。覆盖登录与访问控制、输入校验、额度去重与限频、旧快照保留、本地请求及图片资产统计、流式请求终态，以及账号切换、并发预留、重置确认、失败分类和重启恢复。GitHub Actions 会运行语法编译检查和全部测试；这些检查不验证真实账号的上游可用性。
