@@ -17,6 +17,7 @@ import unittest
 
 from fastapi import HTTPException
 from chatgpt.account_usage import Evidence, UsageStore, UsageTrace
+from chatgpt.scheduling import failure
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -193,7 +194,7 @@ class PipelineTests(UsageBase):
         async def start_trace(*args):
             owner.trace = UsageTrace(owner.store, owner.store.start("a", "alias"))
             return owner.trace
-        namespace.update({"ChatService": FakeService, "start_trace": start_trace})
+        namespace.update({"ChatService": FakeService, "start_trace": start_trace, "failure": failure})
         source_functions("api/chat2api.py", {"to_send_conversation", "finish_attempt", "tracked_stream", "process"}, namespace)
 
     async def test_finished_only_response_keeps_first_content_in_both_modes(self):

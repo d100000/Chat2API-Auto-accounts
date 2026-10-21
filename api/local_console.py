@@ -21,7 +21,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from app import app, templates
 from utils import configs, globals
-from chatgpt import account_quota, account_usage
+from chatgpt import account_quota, account_usage, scheduling
+from chatgpt.account_scheduler import get_scheduler
 
 ROOT = Path(__file__).resolve().parents[1]
 COOKIE = "chat2api_console"
@@ -58,13 +59,15 @@ async def start_quota_monitor():
     async def monitor():
         while True:
             try:
-                await account_quota.refresh()
+                await scheduling.refresh_due(interval=quota_interval())
             except asyncio.CancelledError:
                 raise
             except Exception:
                 from utils.Logger import logger
                 logger.warning("Quota background refresh failed; retained snapshots will be shown as stale.")
-            await asyncio.sleep(quota_interval())
+            # Check reset deadlines promptly, while each upstream read still
+            # obeys the quota service's per-account 60-second cooldown.
+            await asyncio.sleep(min(15, quota_interval()))
 
     QUOTA_TASK = asyncio.create_task(monitor())
 
@@ -195,6 +198,9 @@ async def accounts_page(request: Request):
 
 
 async def with_local_usage(snapshot):
+    scheduler_state = get_scheduler().snapshot(snapshot)
+    snapshot = {**snapshot, "scheduler": {**scheduler_state,
+        "enabled": scheduling.enabled() and configs.auto_seed and bool(configs.authorization_list)}}
     try:
         store = await asyncio.to_thread(account_usage.get_store)
         summaries = await asyncio.to_thread(store.summaries, [account["id"] for account in snapshot["accounts"]])

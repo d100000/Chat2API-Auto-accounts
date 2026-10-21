@@ -117,7 +117,7 @@ class LocalConsoleHTTPTests(unittest.TestCase):
             "CHATGPT_BASE_URL": "http://127.0.0.1:9",
             "ENABLE_GATEWAY": "false",
             "SCHEDULED_REFRESH": "false",
-            "AUTO_SEED": "false",
+            "AUTO_SEED": "true",
             "API_PREFIX": "",
         })
         cls.server_log = (cls.workdir / "server.log").open("w+", encoding="utf-8")
@@ -275,8 +275,21 @@ class LocalConsoleHTTPTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["accounts"], [])
             self.assertEqual(response.json()["auto_refresh_seconds"], 0)
+            scheduling = response.json()["scheduler"]
+            self.assertEqual(scheduling["policy"], "quota_aware")
+            self.assertEqual(scheduling["accounts"], {})
+            self.assertEqual(scheduling["events"], [])
         self.assertEqual(self.client.post(self.base + "/local-console/accounts/refresh", json={"account_id": "invalid"}).status_code, 422)
         self.assertEqual(self.client.post(self.base + "/local-console/accounts/refresh", json={"account_id": "acct_" + "0" * 24}).status_code, 404)
+
+    def test_chat_routing_validation_precedes_account_selection(self):
+        headers = {"Authorization": "Bearer " + self.api_key}
+        body = {"messages": [{"role": "user", "content": "Never generate anything."}], "model": "auto"}
+        for change in ({"quota_feature": "invalid"}, {"conversation_id": "existing"},
+                       {"Chatgpt-Account-Id": "workspace"}, {"messages": [None]}):
+            response = self.client.post(self.base + "/v1/chat/completions", headers=headers, json={**body, **change})
+            self.assertEqual(response.status_code, 400)
+        self.assertFalse((self.workdir / "network-attempted").exists())
 
     def test_expired_account_stays_unknown_without_exposing_token(self):
         self.log_in()

@@ -145,6 +145,7 @@ class Evidence:
     done_received: bool = False
     output_limited: bool = False
     error: bool = False
+    output_started: bool = False
 
 
 class UsageTrace:
@@ -153,6 +154,7 @@ class UsageTrace:
         self.attempt_id = attempt_id
         self.evidence = Evidence()
         self.finished = False
+        self.scheduling_error = None
 
     def exclude_inputs(self, messages):
         message_ids = frozenset(message["id"] for message in messages if isinstance(message, dict) and isinstance(message.get("id"), str))
@@ -165,6 +167,8 @@ class UsageTrace:
         if not isinstance(event, dict):
             return
         if event.get("error") or event.get("errors"):
+            from chatgpt.scheduling import error_signal
+            self.scheduling_error = error_signal(event, feature="image_gen" if self.evidence.image_requested else getattr(self, "scheduled_feature", "reason"))
             self.evidence = replace(self.evidence, error=True)
             raise HTTPException(502, "Upstream stream reported an error.")
         message = event.get("message")
@@ -176,6 +180,8 @@ class UsageTrace:
         if not isinstance(author, dict) or author.get("role") not in ("assistant", "tool"):
             return
         if message.get("status") in ("failed", "error", "finished_with_error", "cancelled"):
+            from chatgpt.scheduling import error_signal
+            self.scheduling_error = error_signal(message, feature="image_gen" if self.evidence.image_requested else getattr(self, "scheduled_feature", "reason"))
             self.evidence = replace(self.evidence, error=True)
             raise HTTPException(502, "Upstream message did not complete successfully.")
         metadata = message.get("metadata") or {}
@@ -192,7 +198,12 @@ class UsageTrace:
         complete_images = frozenset(asset_key(part.get("asset_pointer")) for part in parts
                                     if isinstance(part, dict) and part.get("content_type") == "image_asset_pointer" and asset_key(part.get("asset_pointer"))) if completed else frozenset()
         generated = (complete_images & output_assets) | self.evidence.generated_assets
+        output_started = (bool(parts) or (isinstance(content, dict) and bool(content.get("text"))) or
+                          author.get("role") == "tool" or
+                          (isinstance(recipient, str) and recipient not in ("", "all")) or
+                          (completed and message.get("end_turn") is True))
         self.evidence = replace(self.evidence, upstream_model=observed, image_requested=image_requested or bool(generated),
+                                output_started=self.evidence.output_started or output_started,
                                 generated_assets=generated,
                                 terminal=self.evidence.terminal or (completed and author.get("role") == "assistant" and message.get("end_turn") is True))
 

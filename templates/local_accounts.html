@@ -23,13 +23,14 @@
   </header>
   <main class="workspace accounts-workspace">
     <div class="page-heading">
-      <div><p class="eyebrow">ACCOUNTS</p><h1>账号与额度</h1><p class="page-description">查看 ChatGPT 网页剩余额度与本机调用记录。</p></div>
+      <div><p class="eyebrow">ACCOUNTS</p><h1>账号与额度</h1><p class="page-description">查看 ChatGPT 网页额度、自动调度状态与本机调用记录。</p></div>
       <div class="heading-actions"><button id="reload-accounts" class="button button-secondary" type="button">重新载入</button><button id="refresh-all" class="button button-primary" type="button" disabled>刷新全部额度 <span aria-hidden="true">↻</span></button></div>
     </div>
     <div class="scope-note"><span class="scope-label">ChatGPT 网页</span><p>上游返回的聊天与生图限制，不代表 Codex / Work 额度。未返回的数据不计为 0。</p></div>
     <div id="accounts-error" class="notice notice-error" role="alert" hidden></div>
     <div id="usage-incomplete" class="notice notice-warning" role="alert" hidden>本地用量记录不完整：部分请求未能写入统计，当前数字可能偏低，不能用来推算官方剩余额度。</div>
     <div id="cache-incomplete" class="notice notice-warning" role="alert" hidden>额度缓存未能保存到磁盘。当前快照仍可查看，但重启后可能丢失；请检查本地数据目录权限和剩余空间。</div>
+    <div id="scheduler-incomplete" class="notice notice-warning" role="alert" hidden>调度状态未能完整保存。当前状态仍可查看，重启后的恢复可能受影响；请检查本地数据目录权限和剩余空间。</div>
     <div id="session-expired" class="notice notice-error" role="alert" hidden>登录已过期，当前显示的是上次载入的数据。<a href="/login">重新登录 →</a></div>
     <p id="accounts-feedback" class="accounts-feedback" role="status" aria-live="polite"></p>
     <dl class="account-summary" aria-label="账号概况">
@@ -38,6 +39,15 @@
       <div><dt>待刷新或需处理</dt><dd><span id="summary-attention">—</span><span class="summary-note">未查询、过期或查询异常</span></dd></div>
       <div><dt>近 24 小时本地调用</dt><dd><span id="summary-calls">—</span><span class="summary-note">仅包含经过本机的请求</span></dd></div>
     </dl>
+    <section class="accounts-panel scheduler-panel" aria-labelledby="scheduler-title">
+      <div class="accounts-toolbar"><div class="accounts-list-title"><h2 id="scheduler-title">自动账号调度</h2><span id="scheduler-status" class="account-state" data-state="unknown">正在载入</span></div><span id="scheduler-updated" class="subtle-label">跟随账号数据更新</span></div>
+      <dl class="scheduler-summary" aria-label="可调度账号">
+        <div><dt>大模型可选账号</dt><dd><span id="scheduler-reason-count">—</span><span id="scheduler-reason-detail" class="summary-note">等待调度状态</span></dd></div>
+        <div><dt>生图可选账号</dt><dd><span id="scheduler-image-count">—</span><span id="scheduler-image-detail" class="summary-note">等待调度状态</span></dd></div>
+      </dl>
+      <p class="scheduler-policy" id="scheduler-policy">按能力分别选择账号，额度耗尽后切换；到达重置时间后重新核验，再恢复使用。</p>
+      <details class="scheduler-events" id="scheduler-events-panel"><summary><span>最近调度动态</span><span id="scheduler-latest-event" class="subtle-label">等待调度记录</span></summary><ol id="scheduler-event-list" aria-label="最近调度动态"></ol><p id="scheduler-events-empty" class="field-hint">尚无调度记录。账号池收到请求或状态发生变化后会显示在这里。</p><p class="field-hint">仅显示最近 20 条动态；页面每 5 秒读取本地状态，不会额外请求上游额度。</p></details>
+    </section>
     <section class="accounts-panel" aria-labelledby="accounts-list-title">
       <div class="accounts-toolbar">
         <div class="accounts-list-title"><h2 id="accounts-list-title">账号列表</h2><span id="accounts-count" class="subtle-label">正在载入…</span></div>

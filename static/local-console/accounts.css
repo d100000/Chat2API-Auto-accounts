@@ -12,6 +12,8 @@
   --accounts-column-quota: 16%;
   --accounts-column-usage: 15%;
   --accounts-column-updated: 12%;
+  --scheduler-events-height: 300px;
+  --scheduler-event-time-width: 100px;
 }
 .heading-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .scope-note { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-5); color: var(--color-muted); font-size: var(--type-xs); }
@@ -24,6 +26,27 @@
 .account-summary > div + div { border-left: 1px solid var(--color-border); }
 .account-summary dt { color: var(--color-muted); font-size: var(--type-sm); }
 .account-summary dd { margin: var(--space-1) 0; color: var(--color-text); font-size: var(--type-title); font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.4; }
+.scheduler-panel { margin-bottom: var(--space-5); }
+.scheduler-summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; padding: var(--space-4) var(--panel-padding); gap: var(--space-5); }
+.scheduler-summary > div + div { border-left: 1px solid var(--color-border); padding-left: var(--space-5); }
+.scheduler-summary dt { color: var(--color-muted); font-size: var(--type-sm); }
+.scheduler-summary dd { margin: var(--space-1) 0 0; font-size: var(--type-lg); font-weight: 600; font-variant-numeric: tabular-nums; }
+.scheduler-policy { padding: 0 var(--panel-padding) var(--space-4); color: var(--color-muted); font-size: var(--type-xs); }
+.scheduler-events { padding: var(--space-3) var(--panel-padding); border-top: 1px solid var(--color-border); font-size: var(--type-sm); }
+.scheduler-events summary { cursor: pointer; min-height: var(--button-height); padding: var(--space-2) 0; }
+.scheduler-events summary > .subtle-label { margin-left: var(--space-3); overflow-wrap: anywhere; }
+.scheduler-events ol { margin: var(--space-2) 0 var(--space-3); padding: 0; list-style: none; max-height: var(--scheduler-events-height); overflow-y: auto; }
+.scheduler-event { display: grid; grid-template-columns: var(--scheduler-event-time-width) minmax(0, 1fr); gap: var(--space-3); padding: var(--space-2) 0; border-top: 1px solid var(--color-border); }
+.scheduler-event time { font-size: var(--type-xs); color: var(--color-muted); font-variant-numeric: tabular-nums; }
+.scheduler-event p { overflow-wrap: anywhere; }
+.scheduler-event .field-hint { margin-top: var(--space-1); }
+.scheduler-status-line { padding-top: var(--space-2); margin-top: var(--space-2); border-top: 1px solid var(--color-border); }
+.scheduler-state { display: inline-block; color: var(--color-muted); font-size: var(--type-xs); font-weight: 550; }
+.scheduler-state[data-tone="ready"] { color: var(--color-accent); }
+.scheduler-state[data-tone="waiting"] { color: var(--color-warning); }
+.scheduler-state[data-tone="error"] { color: var(--color-error); }
+.scheduler-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5); }
+.scheduler-detail-grid .feature-name { font-family: var(--font-body); }
 .summary-note { display: block; margin-top: var(--space-1); color: var(--color-muted); font-size: var(--type-xs); font-weight: 400; line-height: 1.6; }
 .accounts-panel { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); overflow: hidden; }
 .accounts-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-4) var(--panel-padding); border-bottom: 1px solid var(--color-border); }
@@ -122,6 +145,12 @@
   .search-field { flex: 1; min-width: 0; width: auto; }
   .accounts-filters select { width: var(--accounts-filter-width); }
   .summary-note { display: none; }
+  .scheduler-summary .summary-note { display: block; }
+  .scheduler-summary { gap: var(--space-3); }
+  .scheduler-summary > div + div { padding-left: var(--space-3); }
+  .scheduler-events summary > .subtle-label { display: block; margin: var(--space-1) 0 0; }
+  .scheduler-event { grid-template-columns: minmax(0, 1fr); gap: var(--space-1); }
+  .scheduler-detail-grid { grid-template-columns: minmax(0, 1fr); }
   .account-summary dt { font-size: var(--type-xs); }
   .account-summary dd { font-size: var(--type-lg); }
   .account-detail-grid { grid-template-columns: minmax(0, 1fr); }

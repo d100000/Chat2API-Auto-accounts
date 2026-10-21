@@ -8,11 +8,43 @@
   const statusLabels = { fresh: '最新快照', stale: '待刷新', unknown: '尚未查询', expired: '凭据过期', error: '查询失败' };
   const credentialLabels = { valid: '声明有效期内', expired: '已过期', unknown: '有效期未知', error: '凭据异常' };
   const featureNames = { reason: '大模型 · reason', image_gen: '生图 · image_gen' };
-  let state = { snapshot: null, loadedAt: 0, loading: false, busy: null, expired: false, filter: 'all', query: '', expanded: new Set(), blockedUntil: 0 };
+  const schedulerStateLabels = {
+    ready: '可选', available: '可选', active: '执行中', unknown: '额度待确认', stale: '额度待刷新',
+    exhausted: '额度已用尽', cooldown: '暂时冷却', reset_pending: '等待重置核验', rechecking: '正在核验',
+    expired: '凭据过期', auth_error: '凭据需更新', disabled: '暂停使用', reserved: '额度已预留', unavailable: '暂不可选',
+  };
+  const schedulerReasonLabels = {
+    quota_available: '上游额度可用', available: '上游额度可用', selected: '按当前额度选中', quota_priority: '优先选择剩余额度较多的账号',
+    quota_exhausted: '已达到该能力的额度限制', exhausted: '已达到该能力的额度限制', upstream_exhausted: '上游返回额度已耗尽',
+    upstream_limit: '上游返回使用限制', quota_depleted: '调度估算额度已分配完', local_budget_exhausted: '调度估算额度已分配完',
+    cooldown: '等待冷却时间结束', rate_limited: '上游暂时限流', upstream_rate_limit: '上游暂时限流',
+    reset_pending: '已到重置时间，等待核验额度', reset_due: '已到重置时间，等待核验额度', reset_verified: '已核验重置后的额度',
+    quota_recovered: '重新查询后确认额度可用', recovered: '重新查询后确认额度可用', restored: '重新查询后确认额度可用',
+    unknown_quota: '上游未提供额度', quota_unknown: '上游未提供额度', stale_quota: '等待更新上游额度',
+    credential_expired: '账号凭据已过期', auth_error: '上游认证失败', authentication_failed: '上游认证失败',
+    upstream_error: '上游请求失败，暂时避开该账号', request_failed: '请求失败，暂时避开该账号',
+    reservations: '额度已为当前请求预留', reserved: '额度已为当前请求预留', in_flight: '当前请求正在处理',
+    retry: '为重试选择其他账号', fallback: '选择其他可用账号', initial: '首次选择账号',
+    quota_empty: '上游额度已用尽', upstream_quota: '上游返回额度已耗尽', quota_refreshed: '重新查询后确认额度可用',
+    rate_limit: '上游暂时限流', transient: '请求暂时失败，等待冷却后再试', auth: '上游认证失败',
+    unknown_fallback: '没有已确认额度可用的账号时，才单路尝试该账号', restart: '服务重启，未完成请求先保留估算扣减',
+    credentials: '账号凭据已过期或异常', cooldown_elapsed: '冷却结束，允许再次尝试',
+    awaiting_quota_refresh: '估算可分配额度已用完，等待重新查询',
+  };
+  const schedulerEventLabels = {
+    selected: '选中账号', switched: '切换账号', switch: '切换账号', exhausted: '额度耗尽',
+    cooldown: '进入冷却', paused: '暂停使用', blocked: '暂时移出账号池',
+    recovered: '重新加入账号池', restored: '重新加入账号池', resumed: '重新加入账号池', available: '重新加入账号池',
+    reset_pending: '等待重置核验', rechecking: '重新核验额度', recheck: '重新核验额度',
+    auth_error: '凭据需更新', expired: '凭据过期', unavailable: '暂无可用账号',
+    rejoined: '重新加入账号池', interrupted: '恢复中断请求的状态',
+  };
+  let state = { snapshot: null, loadedAt: 0, loading: false, quietLoading: false, busy: null, expired: false, filter: 'all', query: '', expanded: new Set(), blockedUntil: 0 };
   let timeUpdaters = [];
   let renderedIds = [];
   let pollTimer = null;
   let pollCount = 0;
+  let loadWaiters = [];
 
   byId('display-timezone').textContent = `时间按 ${dateFormat.resolvedOptions().timeZone} 显示。`;
 
@@ -52,6 +84,94 @@
   function feedback(message = '') { ui['accounts-feedback'].textContent = message; }
   function timed(update) { timeUpdaters = [...timeUpdaters, update]; update(); }
 
+  function schedulerFeature(account, feature) {
+    const value = state.snapshot?.scheduler?.accounts?.[account.id]?.[feature];
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  }
+
+  function schedulerState(value) {
+    if (state.snapshot?.scheduler?.enabled === false) return 'disabled';
+    if (!value) return 'unknown';
+    return Object.hasOwn(schedulerStateLabels, value.state) ? value.state : value.available === true ? 'available' : 'unknown';
+  }
+
+  function schedulerReason(value) {
+    const reasonBlocked = typeof value === 'string' && value.startsWith('reason_');
+    const code = reasonBlocked ? value.slice(7) : value;
+    const description = Object.hasOwn(schedulerReasonLabels, code) ? schedulerReasonLabels[code] : '后台已更新该账号的调度状态';
+    return reasonBlocked ? `大模型额度侧：${description}` : description;
+  }
+
+  function schedulerBadge(value) {
+    const status = schedulerState(value);
+    const reasonBlocked = typeof value?.reason === 'string' && value.reason.startsWith('reason_');
+    const fallback = value?.available === true && ['unknown', 'stale'].includes(status);
+    const text = reasonBlocked ? `大模型：${schedulerStateLabels[status]}` : `${schedulerStateLabels[status]}${fallback ? ' · 兜底' : ''}`;
+    const badge = el('span', 'scheduler-state', text);
+    badge.dataset.tone = ['ready', 'available', 'active'].includes(status) ? 'ready' : ['expired', 'auth_error'].includes(status) ? 'error' : ['exhausted', 'cooldown', 'reset_pending', 'rechecking', 'reserved'].includes(status) ? 'waiting' : 'unknown';
+    return badge;
+  }
+
+  function schedulerContent(account, feature) {
+    const box = el('div', 'scheduler-status-line');
+    const value = schedulerFeature(account, feature);
+    box.append(schedulerBadge(value));
+    if (finite(value?.active) && value.active > 0) box.append(el('span', 'quota-note', `${count(value.active)} 个请求执行中`));
+    const next = timestamp(value?.retry_at ?? (['exhausted', 'reset_pending'].includes(value?.state) ? value?.reset_at : null));
+    if (next !== null) {
+      const hint = el('span', 'quota-note'); box.append(hint);
+      timed(() => { hint.textContent = Date.now() >= next ? '已到时间 · 待后台核验' : `${countdown(next - Date.now())}后可复查`; });
+    }
+    return box;
+  }
+
+  function renderSchedulerSummary() {
+    const scheduler = state.snapshot?.scheduler;
+    const enabled = scheduler?.enabled === true;
+    const badge = byId('scheduler-status');
+    badge.textContent = !state.snapshot ? '正在载入' : !scheduler ? '状态未提供' : enabled ? '按剩余额度自动选择' : '未启用';
+    badge.dataset.state = enabled ? 'fresh' : 'unknown';
+    byId('scheduler-incomplete').hidden = scheduler?.persistence_error !== true;
+    byId('scheduler-updated').textContent = enabled ? '每 5 秒更新本地调度状态' : '跟随账号数据更新';
+    [['reason', 'reason'], ['image_gen', 'image']].forEach(([feature, element]) => {
+      const values = accounts().map((account) => schedulerFeature(account, feature));
+      const available = values.filter((value) => value?.available === true).length;
+      const active = values.reduce((sum, value) => sum + (finite(value?.active) ? Math.max(0, value.active) : 0), 0);
+      const unknown = values.filter((value) => !value || ['unknown', 'stale'].includes(schedulerState(value))).length;
+      byId(`scheduler-${element}-count`).textContent = scheduler ? `${enabled ? count(available) : '0'} / ${count(accounts().length)}` : '—';
+      byId(`scheduler-${element}-detail`).textContent = !scheduler ? '等待调度状态' : !enabled ? '自动调度尚未启用' : `${count(active)} 个请求执行中${unknown ? ` · ${count(unknown)} 个待确认` : ''}`;
+    });
+  }
+
+  function schedulerAccountName(id) {
+    return accounts().find((account) => account.id === id)?.label || (id ? '已移除账号' : '账号池');
+  }
+
+  function schedulerEventText(event) {
+    const title = Object.hasOwn(schedulerEventLabels, event.type) ? schedulerEventLabels[event.type] : '状态更新';
+    const feature = event.feature === 'image_gen' ? '生图' : event.feature === 'reason' ? '大模型' : '账号';
+    if (event.from_account_id && event.to_account_id) return `${feature} · ${title}：${schedulerAccountName(event.from_account_id)} → ${schedulerAccountName(event.to_account_id)}`;
+    return `${feature} · ${title} · ${schedulerAccountName(event.to_account_id || event.account_id)}`;
+  }
+
+  function renderSchedulerEvents() {
+    const rawEvents = state.snapshot?.scheduler?.events;
+    const events = Array.isArray(rawEvents) ? rawEvents.filter((event) => event && typeof event === 'object').sort((left, right) => (timestamp(right.at) || 0) - (timestamp(left.at) || 0)).slice(0, 20) : [];
+    const fragment = document.createDocumentFragment();
+    events.forEach((event) => {
+      const item = el('li', 'scheduler-event');
+      const time = timestamp(event.at);
+      const stamp = el('time', '', time === null ? '时间未提供' : shortDateFormat.format(time));
+      if (time !== null) { stamp.dateTime = new Date(time).toISOString(); stamp.title = dateText(time); }
+      const content = el('div'); content.append(el('p', '', schedulerEventText(event)));
+      if (event.reason) content.append(el('p', 'field-hint', schedulerReason(event.reason)));
+      item.append(stamp, content); fragment.append(item);
+    });
+    byId('scheduler-event-list').replaceChildren(fragment);
+    byId('scheduler-events-empty').hidden = events.length > 0;
+    byId('scheduler-latest-event').textContent = events.length ? schedulerEventText(events[0]) : state.snapshot ? '尚无调度记录' : '等待调度记录';
+  }
+
   function featureExpired(feature) {
     const reset = timestamp(feature?.reset_at);
     return feature?.status === 'expired' || (reset !== null && reset <= Date.now());
@@ -80,7 +200,7 @@
 
   function refreshReason(account) {
     if (state.expired) return '请重新登录';
-    if (state.loading) return '载入中…';
+    if (state.loading && !state.quietLoading) return '载入中…';
     if (state.busy) return state.busy === '*' || state.busy === account.id ? '刷新中…' : '请稍候';
     if (account.refresh?.status === 'in_progress') return '刷新中…';
     if (account.credential_status === 'expired') return '凭据已过期';
@@ -107,14 +227,15 @@
     byId('cache-incomplete').hidden = !state.snapshot?.cache_persistence_error;
     const interval = state.snapshot?.auto_refresh_seconds;
     byId('automatic-refresh').textContent = finite(interval) ? interval > 0 ? `后台每 ${duration(interval)} 更新` : '后台自动刷新已关闭' : '';
+    renderSchedulerSummary();
   }
 
   function updateControls() {
     const list = accounts();
     ui['refresh-all'].disabled = !state.snapshot || list.length === 0 || list.every((account) => Boolean(refreshReason(account)));
     ui['refresh-all'].textContent = state.busy === '*' ? '正在刷新额度…' : state.busy ? '账号刷新中…' : '刷新全部额度 ↻';
-    ui['reload-accounts'].disabled = state.loading || Boolean(state.busy) || state.expired;
-    ui['reload-accounts'].textContent = state.loading ? '载入中…' : '重新载入';
+    ui['reload-accounts'].disabled = (state.loading && !state.quietLoading) || Boolean(state.busy) || state.expired;
+    ui['reload-accounts'].textContent = state.loading && !state.quietLoading ? '载入中…' : '重新载入';
     ui['accounts-rows'].querySelectorAll('[data-refresh-account]').forEach((button) => {
       const account = list.find((item) => item.id === button.dataset.refreshAccount);
       if (!account) return;
@@ -254,6 +375,23 @@
     if (!extraFeatures.length) features.append(el('p', 'field-hint', '上游未返回其他能力额度。'));
     extraFeatures.forEach(([name, feature]) => { const block = el('div', 'detail-subsection'); block.append(el('p', 'feature-name', featureNames[name] || name), quotaContent(account, feature)); features.append(block); });
     grid.append(identity, local, features);
+    const scheduling = section('账号调度', 'detail-wide');
+    const schedulerGrid = el('div', 'scheduler-detail-grid');
+    ['reason', 'image_gen'].forEach((feature) => {
+      const value = schedulerFeature(account, feature);
+      const block = el('div', 'detail-model-block');
+      block.append(el('p', 'feature-name', featureNames[feature]), schedulerBadge(value));
+      block.append(definition([
+        ['可接收新请求', value ? (value.available === true && state.snapshot?.scheduler?.enabled === true ? '是' : '否') : '待确认'],
+        ['调度估算可分配', finite(value?.effective_remaining) ? count(value.effective_remaining) : '未知'],
+        ['已预留', count(value?.reserved)], ['待核对扣减', count(value?.provisional)], ['执行中', count(value?.active)],
+        ['下次复查时间', dateText(value?.retry_at)], ['上游重置时间', dateText(value?.reset_at)],
+        ['当前原因', value?.reason ? schedulerReason(value.reason) : '未提供'],
+      ]));
+      schedulerGrid.append(block);
+    });
+    scheduling.append(schedulerGrid, el('p', 'field-hint', `最近选择：${dateText(state.snapshot?.scheduler?.accounts?.[account.id]?.last_selected_at)}。调度估算、预留和待核对扣减用于避免同时分配超额请求，不等于上游实时余额。生图同时检查大模型与生图额度；到达重置时间后仍需后台核验。`));
+    grid.append(scheduling);
     const restrictions = section('上游模型与窗口限制', 'detail-wide');
     const restrictionGrid = el('div', 'detail-models');
     [['模型限制', account.model_limits], ['额度窗口', account.limits_progress], ['额外窗口', account.windows], ['受限能力', account.blocked_features]].forEach(([label, values]) => {
@@ -299,8 +437,8 @@
         statusNote.textContent = status === 'error' ? '展开查看原因' : status === 'stale' ? '保留上次返回值' : status === 'expired' ? '请更新账号凭据' : '';
         statusNote.hidden = !statusNote.textContent;
       });
-      cells[2].append(quotaContent(account, account.features?.reason));
-      cells[3].append(quotaContent(account, account.features?.image_gen));
+      cells[2].append(quotaContent(account, account.features?.reason), schedulerContent(account, 'reason'));
+      cells[3].append(quotaContent(account, account.features?.image_gen), schedulerContent(account, 'image_gen'));
       const usage = account.local_usage?.windows?.last_24h;
       cells[4].append(el('div', 'usage-primary', `${count(usage?.attempts)} 次调用`), el('p', 'usage-secondary', `成功 ${count(usage?.succeeded)} · 失败 ${count(usage?.failed)}`), el('p', 'usage-secondary', `生成图片 ${count(usage?.generated_images)} 张`));
       const updated = el('time', '', timestamp(account.checked_at) === null ? '未查询' : shortDateFormat.format(timestamp(account.checked_at)));
@@ -331,7 +469,7 @@
     byId('empty-title').textContent = noAccounts ? '还没有导入账号' : '没有匹配的账号';
     byId('empty-description').textContent = noAccounts ? '导入账号凭据后，即可查询额度与查看本地使用情况。' : '试试其他关键词，或清除状态筛选。';
     byId('empty-import').hidden = !noAccounts; byId('clear-filters').hidden = noAccounts;
-    renderSummary(); updateControls();
+    renderSummary(); renderSchedulerEvents(); updateControls();
     if (focusKey) [...ui['accounts-rows'].querySelectorAll('[data-focus-key]')].find((button) => button.dataset.focusKey === focusKey)?.focus({ preventScroll: true });
   }
 
@@ -372,8 +510,9 @@
   }
 
   async function loadAccounts(quiet = false) {
+    if (!quiet && state.loading && state.quietLoading) await new Promise((resolve) => { loadWaiters = [...loadWaiters, resolve]; });
     if (state.loading || state.busy || state.expired) return;
-    state = { ...state, loading: true };
+    state = { ...state, loading: true, quietLoading: quiet };
     if (!quiet) error();
     ui['accounts-loading'].hidden = Boolean(state.snapshot); updateControls();
     try { applySnapshot(await request('/local-console/accounts')); }
@@ -381,11 +520,13 @@
       if (!(cause instanceof SessionExpired)) error(cause.name === 'AbortError' ? '本地服务响应超时，请重新载入。' : cause instanceof TypeError ? '无法连接本地服务，请确认服务正在运行。' : cause.message);
       if (!state.snapshot) byId('accounts-count').textContent = '载入失败';
     } finally {
-      state = { ...state, loading: false }; ui['accounts-loading'].hidden = true; updateControls();
+      state = { ...state, loading: false, quietLoading: false }; ui['accounts-loading'].hidden = true; updateControls();
+      const waiting = loadWaiters; loadWaiters = []; waiting.forEach((resolve) => resolve());
     }
   }
 
   async function refreshAccounts(accountId = null) {
+    if (state.loading && state.quietLoading) await new Promise((resolve) => { loadWaiters = [...loadWaiters, resolve]; });
     if (state.busy || state.loading || state.expired) return;
     const selected = accountId ? accounts().find((account) => account.id === accountId) : null;
     if (accountId && (!selected || refreshReason(selected))) return;
@@ -430,7 +571,10 @@
     timeUpdaters.forEach((update) => update()); renderSummary(); updateControls();
   }, 1000);
   window.setInterval(() => {
-    if (!document.hidden && state.snapshot?.auto_refresh_seconds > 0 && !state.busy && !state.loading && !state.expired) void loadAccounts(true);
+    if (!document.hidden && state.snapshot?.scheduler?.enabled === true && !state.busy && !state.loading && !state.expired) void loadAccounts(true);
+  }, 5000);
+  window.setInterval(() => {
+    if (!document.hidden && state.snapshot?.scheduler?.enabled !== true && state.snapshot?.auto_refresh_seconds > 0 && !state.busy && !state.loading && !state.expired) void loadAccounts(true);
   }, 30000);
   void loadAccounts();
 })();

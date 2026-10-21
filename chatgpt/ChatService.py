@@ -33,14 +33,20 @@ from utils.configs import (
 
 
 class ChatService:
-    def __init__(self, origin_token=None):
+    def __init__(self, origin_token=None, *, selected_token=None):
         # self.user_agent = random.choice(user_agents_list) if user_agents_list else "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
-        self.req_token = get_req_token(origin_token)
+        self.req_token = selected_token if selected_token is not None else get_req_token(origin_token)
         self.chat_token = "gAAAAAB"
         self.s = None
         self.ss = None
         self.ws = None
         self.usage_trace = None
+        self.schedule_lease = None
+        self.schedule_finished = False
+        self.schedule_error = None
+        self.conversation_dispatched = False
+        self.conversation_accepted = False
+        self.conversation_rejected = False
 
     async def set_dynamic_data(self, data):
         if self.req_token:
@@ -350,10 +356,13 @@ class ChatService:
         try:
             url = f'{self.base_url}/conversation'
             stream = self.data.get("stream", False)
+            self.conversation_dispatched = True
             r = await self.s.post_stream(url, headers=self.chat_headers, json=self.chat_request, timeout=10, stream=True)
+            self.conversation_accepted = r.status_code == 200
+            self.conversation_rejected = r.status_code != 200
             if r.status_code != 200:
                 rtext = await r.atext()
-                if "application/json" == r.headers.get("Content-Type", ""):
+                if "application/json" in r.headers.get("Content-Type", ""):
                     detail = json.loads(rtext).get("detail", json.loads(rtext))
                     if r.status_code == 429:
                         check_is_limit(detail, token=self.req_token, model=self.req_model)

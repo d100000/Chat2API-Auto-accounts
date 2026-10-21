@@ -12,9 +12,9 @@ from app import app, templates, security_scheme
 from chatgpt.ChatService import ChatService
 from chatgpt.authorization import refresh_all_tokens
 from chatgpt.account_usage import start_trace
+from chatgpt.scheduling import run_request, failure
 from utils.Logger import logger
 from utils.configs import api_prefix, scheduled_refresh
-from utils.retry import async_retry
 
 scheduler = AsyncIOScheduler()
 
@@ -28,14 +28,17 @@ async def app_start():
         asyncio.get_event_loop().call_later(0, lambda: asyncio.create_task(refresh_all_tokens(force_refresh=False)))
 
 
-async def to_send_conversation(request_data, req_token):
-    chat_service = ChatService(req_token)
+async def to_send_conversation(request_data, req_token, lease=None):
+    chat_service = ChatService(req_token, selected_token=lease.token) if lease else ChatService(req_token)
+    chat_service.schedule_lease = lease
     # req_token may be the shared local key; only the service knows which
     # imported account this attempt will actually use.
-    chat_service.usage_trace = await start_trace(
-        chat_service.req_token, request_data.get("model", "gpt-3.5-turbo-0125"),
-        request_data.get("Chatgpt-Account-Id"))
     try:
+        chat_service.usage_trace = await start_trace(
+            chat_service.req_token, request_data.get("model", "gpt-3.5-turbo-0125"),
+            request_data.get("Chatgpt-Account-Id"))
+        if chat_service.usage_trace:
+            chat_service.usage_trace.scheduled_feature = lease.feature if lease else "reason"
         await chat_service.set_dynamic_data(request_data)
         if chat_service.usage_trace:
             chat_service.usage_trace.set_model(chat_service.req_model)
@@ -45,20 +48,31 @@ async def to_send_conversation(request_data, req_token):
         await finish_attempt(chat_service, "cancelled", "client_cancelled")
         raise
     except HTTPException as e:
+        failure(chat_service, e)
         await finish_attempt(chat_service, "failed", f"http_{e.status_code}")
-        raise HTTPException(status_code=e.status_code, detail=e.detail)
+        raise
     except Exception:
+        error = failure(chat_service, HTTPException(500, "Server error"))
         await finish_attempt(chat_service, "failed", "setup_error")
         logger.error("Chat setup failed.")
-        raise HTTPException(status_code=500, detail="Server error")
+        raise error
 
 
 async def finish_attempt(service, status, error_code=None):
     try:
+        lease = getattr(service, "schedule_lease", None)
+        if lease and not getattr(service, "schedule_finished", False):
+            from chatgpt.account_scheduler import get_scheduler
+            evidence = getattr(service.usage_trace, "evidence", None)
+            await asyncio.shield(get_scheduler().finish(lease, status=status,
+                dispatched=getattr(service, "conversation_dispatched", False),
+                error=getattr(service, "schedule_error", None),
+                image_requested=bool(evidence and evidence.image_requested)))
+            service.schedule_finished = True
         if service.usage_trace:
-            await service.usage_trace.finish(status, error_code)
+            await asyncio.shield(service.usage_trace.finish(status, error_code))
     finally:
-        await service.close_client()
+        await asyncio.shield(service.close_client())
 
 
 async def tracked_stream(service, response):
@@ -86,15 +100,16 @@ async def tracked_stream(service, response):
         if not final_outcome:
             outcome, error_code = "cancelled", "client_cancelled"
         raise
-    except Exception:
+    except Exception as error:
+        failure(service, error)
         outcome, error_code = "failed", "stream_error"
         yield 'data: {"error":{"message":"上游响应失败或连接中断，请检查账号状态后重试。","code":"upstream_stream_error"}}\n\ndata: [DONE]\n\n'
     finally:
         await asyncio.shield(finish_attempt(service, outcome, error_code))
 
 
-async def process(request_data, req_token):
-    chat_service = await to_send_conversation(request_data, req_token)
+async def process(request_data, req_token, lease=None):
+    chat_service = await to_send_conversation(request_data, req_token, lease)
     try:
         await chat_service.prepare_send_conversation()
         if chat_service.usage_trace:
@@ -111,11 +126,13 @@ async def process(request_data, req_token):
         await asyncio.shield(finish_attempt(chat_service, "cancelled", "client_cancelled"))
         raise
     except HTTPException as e:
+        failure(chat_service, e)
         await finish_attempt(chat_service, "failed", f"http_{e.status_code}")
         raise
     except Exception:
+        error = failure(chat_service, HTTPException(500, "Server error"))
         await finish_attempt(chat_service, "failed", "request_error")
-        raise HTTPException(500, "Server error")
+        raise error
 
 
 @app.post(f"/{api_prefix}/v1/chat/completions" if api_prefix else "/v1/chat/completions")
@@ -129,7 +146,10 @@ async def send_conversation(request: Request, credentials: HTTPAuthorizationCred
         raise HTTPException(400, "messages must be a non-empty array")
     if "model" in request_data and not isinstance(request_data["model"], str):
         raise HTTPException(400, "model must be a string")
-    chat_service, res = await async_retry(process, request_data, req_token)
+    if any(not isinstance(message, dict) or message.get("role") not in ("system", "user", "assistant", "tool", "function")
+           or not isinstance(message.get("content"), (str, list)) for message in request_data["messages"]):
+        raise HTTPException(400, "Each message requires a valid role and string or array content")
+    chat_service, res = await run_request(process, request_data, req_token)
     try:
         if isinstance(res, types.AsyncGeneratorType):
             background = BackgroundTask(finish_attempt, chat_service, "interrupted", "response_not_consumed")
