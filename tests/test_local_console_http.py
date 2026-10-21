@@ -4,7 +4,9 @@ No running service, deployment .env, account data, or model requests are needed.
 Run: python -m unittest discover -s tests -p 'test_local_console_http.py'
 """
 
+import base64
 import hashlib
+import json
 import os
 from pathlib import Path
 import secrets
@@ -80,11 +82,11 @@ class LocalConsoleHTTPTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
         (cls.workdir / "templates").mkdir()
-        for filename in ("local_console.html", "local_console_login.html", "tokens.html"):
+        for filename in ("local_console.html", "local_console_login.html", "local_accounts.html", "tokens.html"):
             shutil.copy2(ROOT / "templates" / filename, cls.workdir / "templates" / filename)
         assets = cls.workdir / "static/local-console"
         assets.mkdir(parents=True)
-        for filename in ("console.css", "console.js", "login.js"):
+        for filename in ("console.css", "console.js", "login.js", "accounts.css", "accounts.js"):
             shutil.copy2(ROOT / "static/local-console" / filename, assets / filename)
         (cls.workdir / ".env").write_text("", encoding="ascii")
         (cls.workdir / "data").mkdir()
@@ -110,6 +112,7 @@ class LocalConsoleHTTPTests(unittest.TestCase):
             "LOCAL_CONSOLE_ENABLED": "true",
             "LOCAL_CONSOLE_USERNAME": cls.login["username"],
             "LOCAL_CONSOLE_PASSWORD_HASH": password_hash,
+            "LOCAL_QUOTA_AUTO_REFRESH_SECONDS": "0",
             "AUTHORIZATION": cls.api_key,
             "CHATGPT_BASE_URL": "http://127.0.0.1:9",
             "ENABLE_GATEWAY": "false",
@@ -183,12 +186,14 @@ class LocalConsoleHTTPTests(unittest.TestCase):
         return response
 
     def test_unauthenticated_routes(self):
-        for path in ("/playground", "/tokens"):
+        for path in ("/playground", "/tokens", "/accounts"):
             with self.subTest(path=path):
                 response = self.client.get(self.base + path)
                 self.assertEqual(response.status_code, 303)
                 self.assertEqual(response.headers["Location"], "/login")
         self.assertEqual(self.client.get(self.base + "/local-console/session").status_code, 401)
+        self.assertEqual(self.client.get(self.base + "/local-console/accounts").status_code, 401)
+        self.assertEqual(self.client.post(self.base + "/local-console/accounts/refresh", json={}).status_code, 401)
         self.assertEqual(self.client.post(self.base + "/tokens/error").status_code, 401)
         body = {"messages": [{"role": "user", "content": "Never send this to a model."}]}
         self.assertEqual(self.client.post(self.base + "/local-console/chat", json=body).status_code, 401)
@@ -236,6 +241,7 @@ class LocalConsoleHTTPTests(unittest.TestCase):
                     self.client.headers["Origin"] = origin
                 self.assertEqual(self.client.post(self.base + "/local-console/chat", json=body).status_code, 403)
                 self.assertEqual(self.client.post(self.base + "/local-console/logout").status_code, 403)
+                self.assertEqual(self.client.post(self.base + "/local-console/accounts/refresh", json={}).status_code, 403)
                 self.assertEqual(self.client.post(self.base + "/local-console/login", json=self.login).status_code, 403)
         self.client.headers["Origin"] = CONSOLE_ORIGIN
         self.assertEqual(self.client.get(self.base + "/local-console/session").status_code, 200)
@@ -243,6 +249,8 @@ class LocalConsoleHTTPTests(unittest.TestCase):
     def test_foreign_host_is_rejected(self):
         self.client.headers["Host"] = "example.invalid"
         self.assertEqual(self.client.get(self.base + "/login").status_code, 400)
+        self.assertEqual(self.client.get(self.base + "/accounts").status_code, 400)
+        self.assertEqual(self.client.get(self.base + "/local-console/accounts").status_code, 400)
         self.assertEqual(self.client.post(self.base + "/local-console/login", json=self.login).status_code, 400)
 
     def test_empty_account_pool_and_input_validation(self):
@@ -255,6 +263,40 @@ class LocalConsoleHTTPTests(unittest.TestCase):
                 self.assertIn("尚未配置", response.json()["detail"])
         invalid = {"messages": [], "max_tokens": 99999}
         self.assertEqual(self.client.post(self.base + "/local-console/chat", json=invalid).status_code, 422)
+
+    def test_accounts_empty_state_refresh_and_invalid_identifier(self):
+        self.log_in()
+        page = self.client.get(self.base + "/accounts")
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.headers.get("Cache-Control"), "no-store")
+        self.assertIn("accounts.js", page.text)
+        for method, path in (("get", "/local-console/accounts"), ("post", "/local-console/accounts/refresh")):
+            response = getattr(self.client, method)(self.base + path, **({"json": {}} if method == "post" else {}))
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["accounts"], [])
+            self.assertEqual(response.json()["auto_refresh_seconds"], 0)
+        self.assertEqual(self.client.post(self.base + "/local-console/accounts/refresh", json={"account_id": "invalid"}).status_code, 422)
+        self.assertEqual(self.client.post(self.base + "/local-console/accounts/refresh", json={"account_id": "acct_" + "0" * 24}).status_code, 404)
+
+    def test_expired_account_stays_unknown_without_exposing_token(self):
+        self.log_in()
+        def encode(value):
+            return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+        credential = ".".join((encode({"alg": "none"}), encode({"exp": 1, "sub": "offline-test-user"}), "test-signature"))
+        try:
+            response = self.client.post(self.base + "/tokens/upload", data={"text": credential})
+            self.assertEqual(response.status_code, 200)
+            response = self.client.post(self.base + "/local-console/accounts/refresh", json={})
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn(credential, response.text)
+            self.assertNotIn("offline-test-user", response.text)
+            account = response.json()["accounts"][0]
+            self.assertEqual(account["credential_status"], "expired")
+            self.assertIsNone(account["features"]["reason"]["remaining"])
+            self.assertIsNone(account["features"]["image_gen"]["remaining"])
+            self.assertEqual(account["local_usage"]["totals"]["attempts"], 0)
+        finally:
+            self.client.post(self.base + "/tokens/clear")
 
 
 if __name__ == "__main__":

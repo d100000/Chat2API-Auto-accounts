@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>账号与额度 · Chat2API</title>
+  <link rel="stylesheet" href="/static/local-console/console.css">
+  <link rel="stylesheet" href="/static/local-console/accounts.css">
+  <script src="/static/local-console/accounts.js" defer></script>
+</head>
+<body class="accounts-page">
+  <a class="skip-link" href="#account-search">跳到账号搜索</a>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand brand-link" href="/playground"><span class="brand-mark" aria-hidden="true">C2</span><span>Chat2API<span class="brand-subtitle">本地工作区</span></span></a>
+      <nav class="topbar-actions" aria-label="工作区导航">
+        <a class="text-link" href="/playground">测试台</a>
+        <a class="text-link" href="/tokens">导入凭据</a>
+        <button class="button button-quiet" id="accounts-logout" type="button">退出</button>
+      </nav>
+    </div>
+  </header>
+  <main class="workspace accounts-workspace">
+    <div class="page-heading">
+      <div><p class="eyebrow">ACCOUNTS</p><h1>账号与额度</h1><p class="page-description">查看 ChatGPT 网页剩余额度与本机调用记录。</p></div>
+      <div class="heading-actions"><button id="reload-accounts" class="button button-secondary" type="button">重新载入</button><button id="refresh-all" class="button button-primary" type="button" disabled>刷新全部额度 <span aria-hidden="true">↻</span></button></div>
+    </div>
+    <div class="scope-note"><span class="scope-label">ChatGPT 网页</span><p>上游返回的聊天与生图限制，不代表 Codex / Work 额度。未返回的数据不计为 0。</p></div>
+    <div id="accounts-error" class="notice notice-error" role="alert" hidden></div>
+    <div id="usage-incomplete" class="notice notice-warning" role="alert" hidden>本地用量记录不完整：部分请求未能写入统计，当前数字可能偏低，不能用来推算官方剩余额度。</div>
+    <div id="cache-incomplete" class="notice notice-warning" role="alert" hidden>额度缓存未能保存到磁盘。当前快照仍可查看，但重启后可能丢失；请检查本地数据目录权限和剩余空间。</div>
+    <div id="session-expired" class="notice notice-error" role="alert" hidden>登录已过期，当前显示的是上次载入的数据。<a href="/login">重新登录 →</a></div>
+    <p id="accounts-feedback" class="accounts-feedback" role="status" aria-live="polite"></p>
+    <dl class="account-summary" aria-label="账号概况">
+      <div><dt>账号条目</dt><dd><span id="summary-accounts">—</span><span class="summary-note">可识别的账号身份会合并</span></dd></div>
+      <div><dt>最新快照</dt><dd><span id="summary-fresh">—</span><span class="summary-note">额度数据仍在有效时间内</span></dd></div>
+      <div><dt>待刷新或需处理</dt><dd><span id="summary-attention">—</span><span class="summary-note">未查询、过期或查询异常</span></dd></div>
+      <div><dt>近 24 小时本地调用</dt><dd><span id="summary-calls">—</span><span class="summary-note">仅包含经过本机的请求</span></dd></div>
+    </dl>
+    <section class="accounts-panel" aria-labelledby="accounts-list-title">
+      <div class="accounts-toolbar">
+        <div class="accounts-list-title"><h2 id="accounts-list-title">账号列表</h2><span id="accounts-count" class="subtle-label">正在载入…</span></div>
+        <div class="accounts-filters"><div class="search-field"><label class="sr-only" for="account-search">搜索账号标签</label><input id="account-search" type="search" placeholder="搜索账号标签…" autocomplete="off" maxlength="100"></div><div><label class="sr-only" for="account-status-filter">按状态筛选</label><select id="account-status-filter"><option value="all">全部状态</option><option value="fresh">最新快照</option><option value="stale">待刷新</option><option value="unknown">尚未查询</option><option value="error">查询失败</option><option value="expired">凭据过期</option></select></div></div>
+      </div>
+      <div id="accounts-loading" class="accounts-empty" role="status"><span class="loading-indicator" aria-hidden="true"></span><h3>正在载入账号</h3><p>读取本地保存的额度快照与调用记录。</p></div>
+      <div id="accounts-empty" class="accounts-empty" hidden><h3 id="empty-title">还没有导入账号</h3><p id="empty-description">导入账号凭据后，即可查询额度与查看本地使用情况。</p><a id="empty-import" class="button button-secondary" href="/tokens">导入凭据 →</a><button id="clear-filters" class="button button-secondary" type="button" hidden>清除筛选</button></div>
+      <div id="accounts-table-wrap" class="accounts-table-wrap" hidden>
+        <table class="accounts-table" aria-describedby="accounts-data-note"><thead><tr><th scope="col">账号</th><th scope="col">快照状态</th><th scope="col">大模型剩余<span>reason</span></th><th scope="col">生图剩余<span>image_gen</span></th><th scope="col">本地调用<span>近 24 小时</span></th><th scope="col">上游更新</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead><tbody id="accounts-rows"></tbody></table>
+      </div>
+      <div class="accounts-table-footer"><p id="accounts-data-note">数字来自上游返回的快照；总量未返回时不计算使用百分比。</p><div><span id="automatic-refresh"></span><span id="snapshot-updated">尚未载入</span></div></div>
+    </section>
+    <div class="accounts-footnotes"><p>本地统计从 <span id="usage-started">开始记录时间</span> 起，仅统计经过本机 Chat2API 的调用。5 小时 / 7 天是本地统计范围，不是上游配额周期。</p><p>已生成图片数是已完成图片资产的去重计数，不等于消耗额度。<span id="display-timezone"></span></p></div>
+    <noscript><p class="notice notice-error">请启用 JavaScript 以查看账号额度。</p></noscript>
+  </main>
+</body>
+</html>

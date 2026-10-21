@@ -32,12 +32,15 @@ async def format_not_stream_response(response, prompt_tokens, max_tokens, model)
                 continue
             else:
                 chunk = json.loads(chunk[6:])
+                if chunk.get("error"):
+                    raise HTTPException(502, "Upstream stream reported an error.")
                 if not chunk["choices"][0].get("delta"):
                     continue
                 all_text += chunk["choices"][0]["delta"]["content"]
-        except Exception as e:
-            logger.error(f"Error: {chunk}, error: {str(e)}")
-            continue
+        except HTTPException:
+            raise
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(502, "Unable to parse upstream response.")
     content, completion_tokens, finish_reason = await split_tokens_from_content(all_text, max_tokens, model)
     message = {
         "role": "assistant",
@@ -110,19 +113,23 @@ async def wss_stream_response(websocket, conversation_id):
 
 async def head_process_response(response):
     async for chunk in response:
-        chunk = chunk.decode("utf-8")
-        if chunk.startswith("data: {"):
-            chunk_old_data = json.loads(chunk[6:])
+        text = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
+        if text.startswith("data: {"):
+            chunk_old_data = json.loads(text[6:])
             message = chunk_old_data.get("message", {})
-            if not message and "error" in chunk_old_data:
-                return response, False
+            if chunk_old_data.get("error") or chunk_old_data.get("errors"):
+                raise HTTPException(502, "Upstream stream reported an error.")
             role = message.get('author', {}).get('role')
             if role == 'user' or role == 'system':
                 continue
 
             status = message.get("status")
-            if status == "in_progress":
-                return response, True
+            if status in ("in_progress", "finished_successfully"):
+                async def replay_first(first, rest):
+                    yield first
+                    async for following in rest:
+                        yield following
+                return replay_first(chunk, response), True
     return response, False
 
 
@@ -160,14 +167,24 @@ async def stream_response(service, response, model, max_tokens):
     yield f"data: {json.dumps(chunk_new_data)}\n\n"
 
     async for chunk in response:
-        chunk = chunk.decode("utf-8")
+        chunk = chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk
         if end:
-            logger.info(f"Response Model: {model_slug}")
-            yield "data: [DONE]\n\n"
-            break
+            # Drain remaining events so a late upstream error is not silently
+            # converted into a successful completion.
+            if chunk.startswith("data: {"):
+                tail = json.loads(chunk[6:])
+                if tail.get("error") or tail.get("errors"):
+                    raise HTTPException(502, "Upstream stream reported an error.")
+            if chunk.startswith("data: [DONE]"):
+                logger.info(f"Response Model: {model_slug}")
+                yield "data: [DONE]\n\n"
+                break
+            continue
         try:
             if chunk.startswith("data: {"):
                 chunk_old_data = json.loads(chunk[6:])
+                if chunk_old_data.get("error") or chunk_old_data.get("errors"):
+                    raise HTTPException(502, "Upstream stream reported an error.")
                 finish_reason = None
                 message = chunk_old_data.get("message", {})
                 conversation_id = chunk_old_data.get("conversation_id")
@@ -232,7 +249,10 @@ async def stream_response(service, response, model, max_tokens):
                         parts = content.get("parts", [])
                         new_text = ""
                         for part in parts:
-                            file_id = part.get('asset_pointer').replace('sediment://', '')
+                            if not isinstance(part, dict) or not isinstance(part.get("asset_pointer"), str):
+                                continue
+                            pointer = part["asset_pointer"]
+                            file_id = pointer.split("://", 1)[-1]
                             full_height = part.get("height", 0)
                             current_height = part.get('metadata', {}).get("generation", {}).get("height", 0)
                             if full_height > current_height:
@@ -241,8 +261,8 @@ async def stream_response(service, response, model, max_tokens):
                                 if last_role != role:
                                     new_text = f"\n```{new_text}"
                             else:
-                                image_download_url = await service.get_attachment_url(file_id, conversation_id)
-                                new_text = f"\n```\n![image]({image_download_url})\n"
+                                image_download_url = await service.get_download_url(file_id) if pointer.startswith("file-service://") else await service.get_attachment_url(file_id, conversation_id)
+                                new_text += f"\n```\n![image]({image_download_url})\n"
                     else:
                         text = content.get("text", "")
                         if outer_content_type == "code" and last_content_type != "code":
@@ -272,9 +292,9 @@ async def stream_response(service, response, model, max_tokens):
                 elif status == "finished_successfully":
                     if content.get("content_type") == "multimodal_text":
                         parts = content.get("parts", [])
-                        delta = {}
+                        image_contents = []
                         for part in parts:
-                            if isinstance(part, str):
+                            if not isinstance(part, dict) or not isinstance(part.get("asset_pointer"), str):
                                 continue
                             inner_content_type = part.get('content_type')
                             if inner_content_type == "image_asset_pointer":
@@ -285,13 +305,14 @@ async def stream_response(service, response, model, max_tokens):
                                     image_download_url = await service.get_download_url(file_id)
                                     logger.debug(f"image_download_url: {image_download_url}")
                                     if image_download_url:
-                                        delta = {"content": f"\n```\n![image]({image_download_url})\n"}
+                                        image_contents.append(f"\n![image]({image_download_url})\n")
                                     else:
-                                        delta = {"content": f"\n```\nFailed to load the image.\n"}
+                                        image_contents.append("\nFailed to load the image.\n")
                                 else:
                                     file_id = part.get('asset_pointer').replace('sediment://', '')
                                     image_download_url = await service.get_attachment_url(file_id, conversation_id)
-                                    delta = {"content": f"\n![image]({image_download_url})\n"}
+                                    image_contents.append(f"\n![image]({image_download_url})\n")
+                        delta = {"content": "".join(image_contents)}
                     elif message.get("end_turn"):
                         part = content.get("parts", [])[0]
                         new_text = part[len_last_content:]
@@ -331,21 +352,20 @@ async def stream_response(service, response, model, max_tokens):
                         "conversation_id": conversation_id,
                     })
                 completion_tokens += 1
-                yield f"data: {json.dumps(chunk_new_data)}\n\n"
+                outgoing = f"data: {json.dumps(chunk_new_data)}\n\n"
+                if getattr(service, "usage_trace", None):
+                    service.usage_trace.observe_output(outgoing)
+                yield outgoing
             elif chunk.startswith("data: [DONE]"):
                 logger.info(f"Response Model: {model_slug}")
                 yield "data: [DONE]\n\n"
             else:
                 continue
-        except Exception as e:
-            if chunk.startswith("data: "):
-                chunk_data = json.loads(chunk[6:])
-                if chunk_data.get("error"):
-                    logger.error(f"Error: {chunk_data.get('error')}")
-                    yield "data: [DONE]\n\n"
-                    break
-            logger.error(f"Error: {chunk}, details: {str(e)}")
-            continue
+        except HTTPException:
+            raise
+        except Exception:
+            logger.error("Unable to convert upstream chat event.")
+            raise HTTPException(502, "Unable to convert upstream chat event.")
 
 
 def get_url_from_content(content):

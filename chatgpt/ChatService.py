@@ -40,6 +40,7 @@ class ChatService:
         self.s = None
         self.ss = None
         self.ws = None
+        self.usage_trace = None
 
     async def set_dynamic_data(self, data):
         if self.req_token:
@@ -234,7 +235,7 @@ class ChatService:
                             url=self.ark0se_token_url, json={"blob": ark0se_dx, "method": ark0se_method}, timeout=15
                         )
                         r2esp = r2.json()
-                        logger.info(f"ark0se_token: {r2esp}")
+                        logger.info("Arkose solver response received.")
                         if r2esp.get('solved', True):
                             self.ark0se_token = r2esp.get('token')
                         else:
@@ -369,7 +370,10 @@ class ChatService:
 
             content_type = r.headers.get("Content-Type", "")
             if "text/event-stream" in content_type:
-                res, start = await head_process_response(r.aiter_lines())
+                lines = r.aiter_lines()
+                if self.usage_trace:
+                    lines = self.usage_trace.observe_lines(lines)
+                res, start = await head_process_response(lines)
                 if not start:
                     raise HTTPException(
                         status_code=403,
@@ -547,12 +551,10 @@ class ChatService:
             return None
 
     async def close_client(self):
-        if self.s:
-            await self.s.close()
-            del self.s
-        if self.ss:
-            await self.ss.close()
-            del self.ss
-        if self.ws:
-            await self.ws.close()
-            del self.ws
+        clients = tuple({id(client): client for client in (self.s, self.ss, self.ws) if client is not None}.values())
+        self.s, self.ss, self.ws = None, None, None
+        for client in clients:
+            try:
+                await client.close()
+            except Exception:
+                logger.warning("An upstream client could not be closed cleanly.")

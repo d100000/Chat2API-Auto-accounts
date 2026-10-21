@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app import app, templates
 from utils import configs, globals
+from chatgpt import account_quota, account_usage
 
 ROOT = Path(__file__).resolve().parents[1]
 COOKIE = "chat2api_console"
@@ -31,11 +32,57 @@ ALLOWED_HOSTS = {"127.0.0.1:5005", "localhost:5005"}
 SESSIONS = {}
 FAILURES = defaultdict(deque)
 BUSY = set()
+QUOTA_TASK = None
+
+
+def quota_interval():
+    try:
+        value = int(os.environ.get("LOCAL_QUOTA_AUTO_REFRESH_SECONDS", "300"))
+    except ValueError:
+        return 300
+    return 0 if value == 0 else max(60, value)
+
+
+@app.on_event("startup")
+async def start_quota_monitor():
+    global QUOTA_TASK
+    try:
+        await asyncio.to_thread(account_usage.get_store)
+    except Exception:
+        account_usage.mark_unavailable()
+        from utils.Logger import logger
+        logger.error("Local usage storage is unavailable; proxy startup will continue.")
+    if not quota_interval():
+        return
+
+    async def monitor():
+        while True:
+            try:
+                await account_quota.refresh()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                from utils.Logger import logger
+                logger.warning("Quota background refresh failed; retained snapshots will be shown as stale.")
+            await asyncio.sleep(quota_interval())
+
+    QUOTA_TASK = asyncio.create_task(monitor())
+
+
+@app.on_event("shutdown")
+async def stop_quota_monitor():
+    if QUOTA_TASK:
+        QUOTA_TASK.cancel()
+        await asyncio.gather(QUOTA_TASK, return_exceptions=True)
 
 
 class LoginBody(BaseModel):
     username: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=1, max_length=256)
+
+
+class RefreshAccountsBody(BaseModel):
+    account_id: str | None = Field(default=None, pattern=r"^acct_[0-9a-f]{24}$")
 
 
 class Message(BaseModel):
@@ -97,7 +144,7 @@ async def console_boundary(request: Request, call_next):
     prefix = f"/{configs.api_prefix}" if configs.api_prefix else ""
     management_path = path[len(prefix):] if prefix and path.startswith(prefix + "/") else path
     management = management_path == "/tokens" or management_path.startswith(("/tokens/", "/seed_tokens/"))
-    console = path in {"/", "/login", "/playground"} or path.startswith("/local-console/")
+    console = path in {"/", "/login", "/playground", "/accounts"} or path.startswith("/local-console/")
     if console or management:
         if request.headers.get("host") not in ALLOWED_HOSTS:
             return JSONResponse({"detail": "请使用本机地址访问。"}, 400)
@@ -138,6 +185,45 @@ async def playground(request: Request):
     if not current_session(request):
         return RedirectResponse("/login", status_code=303)
     return templates.TemplateResponse(request=request, name="local_console.html", context={})
+
+
+@app.get("/accounts", response_class=HTMLResponse, include_in_schema=False)
+async def accounts_page(request: Request):
+    if not current_session(request):
+        return RedirectResponse("/login", status_code=303)
+    return templates.TemplateResponse(request=request, name="local_accounts.html", context={})
+
+
+async def with_local_usage(snapshot):
+    try:
+        store = await asyncio.to_thread(account_usage.get_store)
+        summaries = await asyncio.to_thread(store.summaries, [account["id"] for account in snapshot["accounts"]])
+    except Exception:
+        account_usage.mark_unavailable()
+        # Keep upstream quota readable even if local history storage is broken.
+        return {**snapshot, "usage_started_at": None, "usage_recording_status": "incomplete",
+                "auto_refresh_seconds": quota_interval(),
+                "accounts": [{**account, "local_usage": None} for account in snapshot["accounts"]]}
+    return {**snapshot, "usage_started_at": summaries["since"],
+            "usage_recording_status": account_usage.recording_status(),
+            "auto_refresh_seconds": quota_interval(),
+            "accounts": [{**account, "local_usage": summaries["accounts"][account["id"]]} for account in snapshot["accounts"]]}
+
+
+@app.get("/local-console/accounts", include_in_schema=False)
+async def accounts_info(request: Request):
+    require_session(request)
+    return await with_local_usage(account_quota.get_accounts())
+
+
+@app.post("/local-console/accounts/refresh", include_in_schema=False)
+async def refresh_accounts(body: RefreshAccountsBody, request: Request):
+    require_session(request)
+    try:
+        snapshot = await account_quota.refresh(body.account_id)
+    except KeyError:
+        raise HTTPException(404, "账号不存在或已从 Token 池移除。")
+    return await with_local_usage(snapshot)
 
 
 @app.post("/local-console/login", include_in_schema=False)

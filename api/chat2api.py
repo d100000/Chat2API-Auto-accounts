@@ -11,6 +11,7 @@ import utils.globals as globals
 from app import app, templates, security_scheme
 from chatgpt.ChatService import ChatService
 from chatgpt.authorization import refresh_all_tokens
+from chatgpt.account_usage import start_trace
 from utils.Logger import logger
 from utils.configs import api_prefix, scheduled_refresh
 from utils.retry import async_retry
@@ -29,24 +30,92 @@ async def app_start():
 
 async def to_send_conversation(request_data, req_token):
     chat_service = ChatService(req_token)
+    # req_token may be the shared local key; only the service knows which
+    # imported account this attempt will actually use.
+    chat_service.usage_trace = await start_trace(
+        chat_service.req_token, request_data.get("model", "gpt-3.5-turbo-0125"),
+        request_data.get("Chatgpt-Account-Id"))
     try:
         await chat_service.set_dynamic_data(request_data)
+        if chat_service.usage_trace:
+            chat_service.usage_trace.set_model(chat_service.req_model)
         await chat_service.get_chat_requirements()
         return chat_service
+    except asyncio.CancelledError:
+        await finish_attempt(chat_service, "cancelled", "client_cancelled")
+        raise
     except HTTPException as e:
-        await chat_service.close_client()
+        await finish_attempt(chat_service, "failed", f"http_{e.status_code}")
         raise HTTPException(status_code=e.status_code, detail=e.detail)
-    except Exception as e:
-        await chat_service.close_client()
-        logger.error(f"Server error, {str(e)}")
+    except Exception:
+        await finish_attempt(chat_service, "failed", "setup_error")
+        logger.error("Chat setup failed.")
         raise HTTPException(status_code=500, detail="Server error")
+
+
+async def finish_attempt(service, status, error_code=None):
+    try:
+        if service.usage_trace:
+            await service.usage_trace.finish(status, error_code)
+    finally:
+        await service.close_client()
+
+
+async def tracked_stream(service, response):
+    outcome, error_code = "interrupted", "incomplete_stream"
+    final_outcome = False
+    try:
+        async for chunk in response:
+            if service.usage_trace:
+                service.usage_trace.observe_output(chunk)
+            # Delay DONE until the upstream completion evidence has been checked.
+            if isinstance(chunk, str) and chunk.strip() == "data: [DONE]":
+                continue
+            yield chunk
+        if service.usage_trace and not service.usage_trace.complete:
+            final_outcome = True
+            await service.usage_trace.finish(outcome, error_code)
+            yield 'data: {"error":{"message":"上游响应未完整结束，请检查账号状态后重试。","code":"incomplete_stream"}}\n\n'
+        else:
+            outcome, error_code = "succeeded", None
+            final_outcome = True
+            if service.usage_trace:
+                await service.usage_trace.finish(outcome)
+        yield "data: [DONE]\n\n"
+    except (asyncio.CancelledError, GeneratorExit):
+        if not final_outcome:
+            outcome, error_code = "cancelled", "client_cancelled"
+        raise
+    except Exception:
+        outcome, error_code = "failed", "stream_error"
+        yield 'data: {"error":{"message":"上游响应失败或连接中断，请检查账号状态后重试。","code":"upstream_stream_error"}}\n\ndata: [DONE]\n\n'
+    finally:
+        await asyncio.shield(finish_attempt(service, outcome, error_code))
 
 
 async def process(request_data, req_token):
     chat_service = await to_send_conversation(request_data, req_token)
-    await chat_service.prepare_send_conversation()
-    res = await chat_service.send_conversation()
-    return chat_service, res
+    try:
+        await chat_service.prepare_send_conversation()
+        if chat_service.usage_trace:
+            chat_service.usage_trace.exclude_inputs(chat_service.chat_request.get("messages", []))
+        res = await chat_service.send_conversation()
+        if isinstance(res, types.AsyncGeneratorType):
+            return chat_service, tracked_stream(chat_service, res)
+        if chat_service.usage_trace and not chat_service.usage_trace.complete:
+            await finish_attempt(chat_service, "interrupted", "incomplete_stream")
+            raise HTTPException(502, "Upstream response did not complete.")
+        await finish_attempt(chat_service, "succeeded")
+        return chat_service, res
+    except asyncio.CancelledError:
+        await asyncio.shield(finish_attempt(chat_service, "cancelled", "client_cancelled"))
+        raise
+    except HTTPException as e:
+        await finish_attempt(chat_service, "failed", f"http_{e.status_code}")
+        raise
+    except Exception:
+        await finish_attempt(chat_service, "failed", "request_error")
+        raise HTTPException(500, "Server error")
 
 
 @app.post(f"/{api_prefix}/v1/chat/completions" if api_prefix else "/v1/chat/completions")
@@ -56,10 +125,14 @@ async def send_conversation(request: Request, credentials: HTTPAuthorizationCred
         request_data = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail={"error": "Invalid JSON body"})
+    if not isinstance(request_data, dict) or not isinstance(request_data.get("messages"), list) or not request_data["messages"]:
+        raise HTTPException(400, "messages must be a non-empty array")
+    if "model" in request_data and not isinstance(request_data["model"], str):
+        raise HTTPException(400, "model must be a string")
     chat_service, res = await async_retry(process, request_data, req_token)
     try:
         if isinstance(res, types.AsyncGeneratorType):
-            background = BackgroundTask(chat_service.close_client)
+            background = BackgroundTask(finish_attempt, chat_service, "interrupted", "response_not_consumed")
             return StreamingResponse(res, media_type="text/event-stream", background=background)
         else:
             background = BackgroundTask(chat_service.close_client)

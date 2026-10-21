@@ -10,7 +10,7 @@ def check_is_limit(detail, token, model):
     if token and isinstance(detail, dict) and detail.get('clears_in'):
         clear_time = int(time.time()) + detail.get('clears_in')
         limit_details.setdefault(token, {})[model] = clear_time
-        logger.info(f"{token[:40]}: Reached {model} limit, will be cleared at {datetime.fromtimestamp(clear_time).replace(microsecond=0)}")
+        logger.info(f"Account reached model limit; clears at {datetime.fromtimestamp(clear_time).replace(microsecond=0)}")
 
 
 async def handle_request_limit(token, model):
