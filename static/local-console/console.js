@@ -7,6 +7,8 @@
     'request-state', 'request-time', 'request-http', 'first-token-time', 'service-status',
     'service-status-text', 'refresh-session', 'logout-button', 'request-options', 'copy-endpoint',
     'configuration-summary', 'request-mode', 'history-mode', 'image-url', 'system-prompt', 'advanced-options', 'image-mode-note',
+    'mode-text', 'mode-image', 'fill-text-example', 'fill-image-example',
+    'chat-clear-dialog', 'chat-clear-form', 'chat-clear-cancel',
   ].map((id) => [id, byId(id)]));
   const QUICK_PROMPT = '请只回复 OK。';
   const MAX_RAW_CHARS = 200000;
@@ -17,15 +19,25 @@
   let requestSequence = 0;
 
   byId('shortcut-label').textContent = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘ Enter' : 'Ctrl + Enter';
-  // Keep the conversation within reach on small screens; this is still a native,
-  // keyboard-accessible disclosure and the user's later choice is left intact.
-  if (window.matchMedia('(max-width: 760px)').matches) ui['request-options'].open = false;
+  // Narrow screens start with the native disclosure collapsed. Reopen it when
+  // returning to desktop so the parameter column never starts empty.
+  const optionsMedia = window.matchMedia('(max-width: 760px)');
+  ui['request-options'].open = !optionsMedia.matches;
+  optionsMedia.addEventListener?.('change', (event) => { ui['request-options'].open = !event.matches; });
+  ui['request-options'].querySelector('summary')?.addEventListener('click', (event) => {
+    if (!optionsMedia.matches) event.preventDefault();
+  });
 
   function updateConfigurationSummary() {
     const model = ui.model.value.trim() || '未设置模型';
     const label = `${ui['request-mode'].value === 'image' ? '生图' : '对话'} · ${model} · ${ui.stream.checked ? '流式' : '完整响应'}`;
     ui['configuration-summary'].textContent = label;
     ui['configuration-summary'].title = label;
+    for (const mode of ['text', 'image']) {
+      const selected = ui['request-mode'].value === mode;
+      ui[`mode-${mode}`].setAttribute('aria-pressed', String(selected));
+      ui[`mode-${mode}`].tabIndex = selected ? 0 : -1;
+    }
   }
 
   function invalidConfiguration(field, message) {
@@ -51,7 +63,7 @@
     ui['clear-button'].disabled = pending || !ui['chat-messages'].querySelector('.exchange');
     ui['stop-button'].hidden = !pending;
     ui.prompt.readOnly = pending;
-    for (const key of ['model', 'max-tokens', 'stream', 'request-mode', 'history-mode', 'image-url', 'system-prompt']) ui[key].disabled = pending;
+    for (const key of ['model', 'max-tokens', 'stream', 'request-mode', 'history-mode', 'image-url', 'system-prompt', 'mode-text', 'mode-image', 'fill-text-example', 'fill-image-example']) ui[key].disabled = pending;
     ui['chat-messages'].setAttribute('aria-busy', String(pending));
   }
 
@@ -154,14 +166,22 @@
     details.append(element('summary', '', '查看原始响应'));
     const raw = element('pre', '', '等待响应…');
     raw.tabIndex = 0;
-    details.append(raw);
+    const rawContent = element('div', 'raw-response-content');
+    const rawToolbar = element('div', 'raw-response-toolbar');
+    const copyRaw = element('button', 'button button-quiet raw-copy-button', '复制原始数据');
+    copyRaw.type = 'button';
+    copyRaw.disabled = true;
+    copyRaw.setAttribute('aria-label', '复制显示的原始响应');
+    rawToolbar.append(element('span', '', '响应数据'), copyRaw);
+    rawContent.append(rawToolbar, raw);
+    details.append(rawContent);
     tools.append(copy, details);
     assistantBody.append(author, content, state, tools);
     assistant.append(assistantBody);
     exchange.append(user, assistant);
     ui['chat-messages'].append(exchange);
     scrollToLatest(true);
-    return { exchange, content, state, copy, raw };
+    return { exchange, content, state, copy, raw, copyRaw };
   }
 
   function saveRaw(request, value) {
@@ -171,6 +191,7 @@
     const entry = rendered.slice(0, remaining);
     request.rawEntries = [...request.rawEntries, entry];
     request.rawChars += entry.length;
+    request.view.copyRaw.disabled = false;
     request.view.raw.textContent = request.rawEntries.join('\n\n') + (rendered.length > remaining ? '\n\n[原始响应较长，已截断显示]' : '');
   }
 
@@ -347,6 +368,10 @@
       const copied = await window.ConsoleUI.copyText(request.answer, request.view.copy);
       if (!copied) setError('自动复制失败，请选中回复文字后手动复制。');
     });
+    request.view.copyRaw.addEventListener('click', async () => {
+      const copied = await window.ConsoleUI.copyText(request.view.raw.textContent, request.view.copyRaw);
+      if (!copied) setError('自动复制失败，请展开原始响应后手动复制。');
+    });
     try {
       const response = await fetch('/local-console/chat', {
         method: 'POST',
@@ -434,6 +459,31 @@
   }
   ui.stream.addEventListener('change', updateConfigurationSummary);
   ui['request-mode'].addEventListener('change', selectMode);
+  for (const mode of ['text', 'image']) {
+    const button = ui[`mode-${mode}`];
+    button.addEventListener('click', () => {
+      if (active) return;
+      ui['request-mode'].value = mode;
+      selectMode();
+    });
+    button.addEventListener('keydown', (event) => {
+      if (active || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 'text' : event.key === 'End' ? 'image' : mode === 'text' ? 'image' : 'text';
+      ui['request-mode'].value = next;
+      selectMode();
+      ui[`mode-${next}`].focus();
+    });
+  }
+  for (const mode of ['text', 'image']) {
+    ui[`fill-${mode}-example`].addEventListener('click', () => {
+      if (active) return;
+      ui['request-mode'].value = mode;
+      ui.prompt.value = mode === 'image' ? '请生成一张白色背景上的蓝色圆形图案。' : QUICK_PROMPT;
+      selectMode();
+      ui.prompt.focus();
+    });
+  }
   ui['history-mode'].addEventListener('change', () => ui['history-mode'].removeAttribute('aria-invalid'));
   ui['copy-endpoint'].addEventListener('click', async () => {
     await window.ConsoleUI.copyText(byId('base-url').textContent, ui['copy-endpoint']);
@@ -449,8 +499,8 @@
     active.controller.abort();
     ui['stop-button'].disabled = false;
   });
-  ui['clear-button'].addEventListener('click', () => {
-    if (active || !window.confirm('清空当前页面的对话记录？此操作不会删除平台账号或上游聊天记录。')) return;
+  function clearConversation() {
+    if (active) return;
     history = [];
     ui['chat-messages'].querySelectorAll('.exchange').forEach((node) => node.remove());
     ui['empty-state'].hidden = false;
@@ -463,6 +513,22 @@
     updateControls();
     ui.prompt.focus();
     window.ConsoleUI.toast('当前页面的对话已清空。');
+  }
+  ui['clear-button'].addEventListener('click', () => {
+    if (active) return;
+    if (typeof ui['chat-clear-dialog'].showModal === 'function') {
+      ui['chat-clear-dialog'].showModal();
+      ui['chat-clear-cancel'].focus();
+    } else if (window.confirm('清空当前页面的对话记录？此操作不会删除平台账号或上游聊天记录。')) {
+      clearConversation();
+    }
+  });
+  ui['chat-clear-cancel'].addEventListener('click', () => ui['chat-clear-dialog'].close());
+  ui['chat-clear-dialog'].addEventListener('close', () => ui['clear-button'].focus());
+  ui['chat-clear-form'].addEventListener('submit', (event) => {
+    event.preventDefault();
+    ui['chat-clear-dialog'].close();
+    clearConversation();
   });
   ui['logout-button'].addEventListener('click', async () => {
     ui['logout-button'].disabled = true;

@@ -1,27 +1,35 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light">
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark">
   <title>功能与设置 · Chat2API</title>
-  <link rel="stylesheet" href="/static/local-console/console.css?v=20261021c">
-  <link rel="stylesheet" href="/static/local-console/features.css?v=20261022">
-  <script src="/static/local-console/ui.js?v=20261021c" defer></script>
-  <script src="/static/local-console/features.js?v=20261022" defer></script>
+  <script src="/static/local-console/theme.js?v=20261021g"></script>
+  <link rel="stylesheet" href="/static/local-console/console.css?v=20261021g">
+  <link rel="stylesheet" href="/static/local-console/features.css?v=20261021g">
+  <script src="/static/local-console/ui.js?v=20261021g" defer></script>
+  <script src="/static/local-console/features.js?v=20261021g" defer></script>
 </head>
 <body class="features-page">
-  <a class="skip-link" href="#capabilities-title">跳到功能目录</a>
+  <a class="skip-link" href="#features-section-tabs">跳到功能目录</a>
   {% with active_page='features', logout_id='features-logout' %}{% include '_workspace_header.html' %}{% endwith %}
-  <main class="workspace">
-    <div class="page-heading"><div><p class="eyebrow">工作区 / 功能设置</p><h1>功能与设置</h1><p class="page-description">所有功能的入口、当前开关与使用条件，在这里统一查看。</p></div><button id="features-reload" class="button button-secondary" type="button">更新状态</button></div>
+  <main class="workspace features-workspace">
+    <div class="page-heading"><div><h1>功能与设置</h1><p class="page-description">查看代理能力、原版网关与当前运行配置。</p></div><button id="features-reload" class="button button-secondary" type="button"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6.1 7a7 7 0 0 1 11.6-1.2L20 8M4 16l2.3 2.2A7 7 0 0 0 17.9 17"/></svg>更新状态</button></div>
     <p id="features-error" class="notice notice-error" role="alert" hidden></p>
     <p id="features-loading" class="features-loading" role="status">正在读取功能与配置…</p>
     <div id="features-content" hidden>
-      <nav class="features-section-nav" aria-label="本页目录"><a href="#capabilities-title">代理能力</a><a href="#gateway-title">原版网页网关</a><a href="#configuration-title">运行配置</a><a href="#api-examples">接口示例</a></nav>
-      <div id="management-links" class="management-links"></div>
-      <section class="features-section" aria-labelledby="capabilities-title"><div class="features-section-heading"><div><h2 id="capabilities-title">ChatGPT 代理能力</h2><p class="field-hint">这里标记源码已实现的路径；账号权限与上游服务决定实际结果。</p></div></div><div id="feature-capabilities" class="feature-grid"></div></section>
-      <section class="features-section" aria-labelledby="gateway-title"><div class="features-section-heading"><div><h2 id="gateway-title">原版网页网关</h2><p class="field-hint">lanqian528/chat2api 的网页、GPTs 和 Seed 功能保留在项目内。</p></div><span id="gateway-state" class="feature-state"></span></div><p id="gateway-help" class="gateway-help"></p><div id="gateway-features" class="gateway-features"></div></section>
-      <section class="features-section" aria-labelledby="configuration-title"><div class="features-section-heading"><div><h2 id="configuration-title">运行配置</h2><p id="configuration-note" class="field-hint"></p></div><span class="readonly-label">只读</span></div><dl id="feature-configuration" class="feature-configuration"></dl></section>
-      <section class="features-section" aria-labelledby="api-examples"><div class="features-section-heading"><div><h2 id="api-examples">接口示例与能力边界</h2><p class="field-hint">示例均使用占位凭据；实际 API Key 请在「API 密钥」页查看。</p></div><a class="button button-secondary" href="/connection">管理 API 密钥</a></div><ul id="feature-boundaries" class="feature-boundaries"></ul><div id="feature-examples" class="feature-examples"></div></section>
+      <div id="features-section-tabs" class="features-section-nav" role="tablist" aria-label="功能设置目录" tabindex="-1" data-motion-tabs>
+        <button id="features-tab-capabilities" type="button" role="tab" aria-selected="true" aria-controls="features-panel-capabilities" tabindex="0" data-feature-section="capabilities">功能入口</button>
+        <button id="features-tab-gateway" type="button" role="tab" aria-selected="false" aria-controls="features-panel-gateway" tabindex="-1" data-feature-section="gateway">网页网关</button>
+        <button id="features-tab-configuration" type="button" role="tab" aria-selected="false" aria-controls="features-panel-configuration" tabindex="-1" data-feature-section="configuration">运行配置</button>
+        <button id="features-tab-examples" type="button" role="tab" aria-selected="false" aria-controls="features-panel-examples" tabindex="-1" data-feature-section="examples">接口示例</button>
+      </div>
+      <div id="features-panel-capabilities" role="tabpanel" aria-labelledby="features-tab-capabilities" tabindex="0">
+        <div id="management-links" class="management-links"></div>
+        <section class="features-section" aria-labelledby="capabilities-title"><div class="features-section-heading"><div><h2 id="capabilities-title">ChatGPT 代理能力</h2><p class="field-hint">源码支持的功能如下，实际结果取决于账号权限与上游服务。</p></div><span class="readonly-label">Chat Completions</span></div><div id="feature-capabilities" class="feature-grid"></div></section>
+      </div>
+      <section id="features-panel-gateway" class="features-section" role="tabpanel" aria-labelledby="features-tab-gateway" tabindex="0" hidden><div class="features-section-heading"><div><h2 id="gateway-title">原版网页网关</h2><p class="field-hint">保留 lanqian528/chat2api 的网页、GPTs 和 Seed 功能。</p></div><span id="gateway-state" class="feature-state"></span></div><p id="gateway-help" class="gateway-help"></p><div id="gateway-features" class="gateway-features"></div></section>
+      <section id="features-panel-configuration" class="features-section" role="tabpanel" aria-labelledby="features-tab-configuration" tabindex="0" hidden><div class="features-section-heading"><div><h2 id="configuration-title">运行配置</h2><p id="configuration-note" class="field-hint"></p></div><span class="readonly-label">只读快照</span></div><div class="feature-configuration-labels" aria-hidden="true"><span>环境变量 / 用途</span><span>当前状态</span></div><dl id="feature-configuration" class="feature-configuration"></dl></section>
+      <section id="features-panel-examples" class="features-section" role="tabpanel" aria-labelledby="features-tab-examples" tabindex="0" hidden><div class="features-section-heading"><div><h2 id="api-examples">接口示例</h2><p class="field-hint">按需展开请求示例，替换占位凭据后调用。</p></div><a class="button button-secondary" href="/connection">管理 API 密钥</a></div><div id="feature-examples" class="feature-examples"></div><details class="feature-boundaries-panel" open><summary>能力边界</summary><ul id="feature-boundaries" class="feature-boundaries"></ul></details></section>
     </div>
     <noscript><p class="notice notice-error">请启用 JavaScript 以读取运行状态。</p></noscript>
   </main>

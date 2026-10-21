@@ -3,40 +3,43 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <title>登录 · Chat2API 本地工作区</title>
-  <link rel="stylesheet" href="/static/local-console/console.css?v=20261021c">
-  <script src="/static/local-console/ui.js?v=20261021c" defer></script>
-  <script src="/static/local-console/login.js?v=20261021c" defer></script>
+  <meta name="color-scheme" content="light dark">
+  <title>登录 · Chat2API</title>
+  <script src="/static/local-console/theme.js?v=20261021g"></script>
+  <link rel="stylesheet" href="/static/local-console/console.css?v=20261021g">
+  <script src="/static/local-console/ui.js?v=20261021g" defer></script>
+  <script src="/static/local-console/login.js?v=20261021g" defer></script>
 </head>
 <body class="login-page">
-  <main class="login-shell">
-    <div class="brand"><span class="brand-mark" aria-hidden="true">C2</span><span>Chat2API<span class="brand-subtitle">本地工作区</span></span></div>
-    <section class="login-panel" aria-labelledby="login-title">
-      <div class="login-intro">
-        <p class="eyebrow">LOCAL WORKSPACE</p>
-        <h1 id="login-title">登录工作区</h1>
-        <p class="login-description">管理账号额度与调度，测试 ChatGPT 反代响应。</p>
-      </div>
-      <form id="login-form">
-        <div class="field">
-          <label for="username">用户名</label>
-          <input id="username" name="username" value="admin" autocomplete="username" required maxlength="80" autofocus>
-        </div>
-        <div class="field">
-          <label for="password">密码</label>
-          <div class="password-control">
-            <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256" aria-describedby="password-hint">
-            <button id="password-toggle" class="button button-quiet" type="button" aria-controls="password" aria-pressed="false" aria-label="显示密码">显示</button>
-          </div>
-          <p id="password-hint" class="field-hint">使用部署时提供的本地管理密码。</p>
-        </div>
-        <p id="login-error" class="notice notice-error" role="alert" hidden></p>
-        <button id="login-submit" class="button button-primary button-full" type="submit">登录工作区 <span aria-hidden="true">→</span></button>
-      </form>
-    </section>
-    <p class="login-footer"><span class="status-dot" aria-hidden="true"></span>本地部署 · 仅在当前设备访问</p>
-    <noscript><p class="notice notice-error">请启用 JavaScript 后登录。</p></noscript>
-  </main>
+  <aside class="login-identity" aria-label="Chat2API 工作区">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m8 6-5 6 5 6m8-12 5 6-5 6m-3-14-2 16"/></svg></span><span>Chat2API<span class="brand-subtitle">CONTROL CENTER</span></span></div>
+    <div class="login-story">
+      <h2>账号、额度与 API，<br>一处管理。</h2>
+      <p>从账号状态到每一次调用，在同一个工作区里完成配置、测试与管理。</p>
+      <ul class="login-capabilities">
+        <li><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20v-7m8 7V4m8 16V9"/><path d="M2 20h20"/></svg>查看账号额度与调度状态</li>
+        <li><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="5"/><path d="m12 11 8-8 2 2-3 3 2 2-3 3-2-2"/></svg>为应用分配独立 API 密钥</li>
+        <li><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 9 3 3-3 3m6 0h3"/><rect x="3" y="4" width="18" height="16" rx="4"/></svg>测试文本、图文与生图请求</li>
+      </ul>
+    </div>
+    <p class="login-identity-footer">CHAT2API · SELF HOSTED WORKSPACE</p>
+  </aside>
+  <div class="login-content">
+    <button class="button button-quiet icon-button theme-toggle login-theme" data-theme-toggle type="button" aria-label="切换为深色模式" title="切换主题"><svg class="ui-icon theme-icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><svg class="ui-icon theme-icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20.8 13.3A9 9 0 0 1 10.7 3.2 9 9 0 1 0 20.8 13.3Z"/></svg></button>
+    <main class="login-shell">
+      <div class="brand login-mobile-brand"><span class="brand-mark" aria-hidden="true">C2</span><span>Chat2API<span class="brand-subtitle">CONTROL CENTER</span></span></div>
+      <section class="login-panel" aria-labelledby="login-title">
+        <div class="login-intro"><h1 id="login-title">登录工作区</h1><p class="login-description">输入管理员凭据，继续管理你的 Chat2API。</p></div>
+        <form id="login-form">
+          <div class="field"><label for="username">用户名</label><input id="username" name="username" value="admin" autocomplete="username" required maxlength="80" autofocus></div>
+          <div class="field"><label for="password">密码</label><div class="password-control"><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256" aria-describedby="password-hint"><button id="password-toggle" class="button button-quiet" type="button" aria-controls="password" aria-pressed="false" aria-label="显示密码">显示</button></div><p id="password-hint" class="field-hint">使用部署时提供的本地管理密码。</p></div>
+          <p id="login-error" class="notice notice-error" role="alert" hidden></p>
+          <button id="login-submit" class="button button-primary button-full" type="submit">登录工作区 <span aria-hidden="true">→</span></button>
+        </form>
+      </section>
+      <p class="login-footer"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>本地部署 · 管理页面仅限当前设备</p>
+      <noscript><p class="notice notice-error">请启用 JavaScript 后登录。</p></noscript>
+    </main>
+  </div>
 </body>
 </html>

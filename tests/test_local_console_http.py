@@ -86,7 +86,7 @@ class LocalConsoleHTTPTests(unittest.TestCase):
             shutil.copy2(ROOT / "templates" / filename, cls.workdir / "templates" / filename)
         assets = cls.workdir / "static/local-console"
         assets.mkdir(parents=True)
-        for filename in ("console.css", "console.js", "login.js", "accounts.css", "accounts.js", "ui.js", "playground.css", "tokens.css", "tokens.js", "connection.css", "connection.js", "features.css", "features.js"):
+        for filename in ("console.css", "console.js", "login.js", "accounts.css", "accounts.js", "ui.js", "playground.css", "tokens.css", "tokens.js", "connection.css", "connection.js", "features.css", "features.js", "theme.js"):
             shutil.copy2(ROOT / "static/local-console" / filename, assets / filename)
         (cls.workdir / ".env").write_text("", encoding="ascii")
         (cls.workdir / "data").mkdir()

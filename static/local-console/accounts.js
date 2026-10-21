@@ -42,6 +42,7 @@
   let state = { snapshot: null, loadedAt: 0, loading: false, quietLoading: false, busy: null, expired: false, filter: 'all', query: '', expanded: new Set(), detailTabs: {}, disclosures: new Set(), blockedUntil: 0 };
   let timeUpdaters = [];
   let renderedIds = [];
+  let renderedSignature = null;
   let pollTimer = null;
   let pollCount = 0;
   let loadWaiters = [];
@@ -471,12 +472,24 @@
     const tabs = [['overview', '概览', detailOverview], ['scheduling', '调度', detailScheduling], ['quotas', '更多额度', detailQuotas], ['models', '模型记录', detailModels]];
     const selected = tabs.some(([key]) => key === state.detailTabs[account.id]) ? state.detailTabs[account.id] : 'overview';
     const tablist = el('div', 'detail-tabs');
+    tablist.dataset.motionTabs = '';
     tablist.setAttribute('role', 'tablist'); tablist.setAttribute('aria-label', `${account.label || '账号'} 详情`);
     const panels = el('div', 'detail-panels');
+    const renderedPanels = new Set([selected]);
     function activate(key) {
       state = { ...state, detailTabs: { ...state.detailTabs, [account.id]: key } };
-      renderRows();
-      [...ui['accounts-rows'].querySelectorAll('[data-focus-key]')].find((button) => button.dataset.focusKey === `tab:${account.id}:${key}`)?.focus({ preventScroll: true });
+      const controls = tablist.querySelectorAll('button');
+      tabs.forEach(([name, , content], panelIndex) => {
+        const active = name === key;
+        const control = controls[panelIndex];
+        control.setAttribute('aria-selected', String(active)); control.tabIndex = active ? 0 : -1;
+        const panel = panels.children[panelIndex]; panel.hidden = !active;
+        if (active && !renderedPanels.has(name)) { panel.append(...content(account)); renderedPanels.add(name); }
+        if (active) control.focus({ preventScroll: true });
+      });
+      // Preserve the tab strip so the shared indicator can move continuously.
+      // A later identical poll also keeps these visited panels and their focus.
+      renderedSignature = rowsSignature();
     }
     tabs.forEach(([key, label, content], tabIndex) => {
       const active = selected === key;
@@ -502,19 +515,35 @@
     return box;
   }
 
+  function rowsSignature(filtered = filteredAccounts()) {
+    return JSON.stringify([filtered, state.snapshot?.scheduler?.accounts, state.snapshot?.scheduler?.enabled,
+      state.query, state.filter, state.busy, state.expired, [...state.expanded], state.detailTabs, [...state.disclosures]]);
+  }
+
   function renderRows(revealedId = null) {
     const focusKey = document.activeElement?.dataset?.focusKey;
+    const filtered = filteredAccounts();
+    const signature = rowsSignature(filtered);
+    // Local polling often returns identical rows. Keep their DOM and focus intact;
+    // countdowns, aggregate status and the activity feed still update normally.
+    if (!revealedId && renderedSignature === signature) {
+      timeUpdaters.forEach((update) => update()); renderSummary(); renderSchedulerEvents(); updateControls(); return;
+    }
+    renderedSignature = signature;
     timeUpdaters = [];
     const fragment = document.createDocumentFragment();
-    const filtered = filteredAccounts();
     renderedIds = filtered.map((account) => account.id);
     filtered.forEach((account, index) => {
       const row = el('tr', 'account-row');
       const isExpanded = state.expanded.has(account.id);
       row.classList.toggle('is-expanded', isExpanded);
       const cells = ['账号', '快照状态', '大模型剩余 · reason', '生图剩余 · image_gen', '本地调用 · 近24小时', '上游更新', '操作'].map((label) => { const cell = el('td'); cell.dataset.label = label; return cell; });
-      cells[0].append(el('span', 'account-name', account.label || `账号 ${index + 1}`));
-      if (finite(account.token_count)) cells[0].append(el('span', 'account-meta', `${count(account.token_count)} 份关联凭据`));
+      const identity = el('div', 'account-identity');
+      const avatar = el('span', 'account-avatar', String(accounts().findIndex((item) => item.id === account.id) + 1).padStart(2, '0')); avatar.setAttribute('aria-hidden', 'true');
+      const identityText = el('div', 'account-identity-text');
+      identityText.append(el('span', 'account-name', account.label || `账号 ${index + 1}`));
+      if (finite(account.token_count)) identityText.append(el('span', 'account-meta', `${count(account.token_count)} 份关联凭据`));
+      identity.append(avatar, identityText); cells[0].append(identity);
       const badge = el('span', 'account-state');
       const statusNote = el('span', 'quota-note');
       cells[1].append(badge, statusNote);

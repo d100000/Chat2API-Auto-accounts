@@ -33,6 +33,10 @@
     seedConfirm.textContent = pending && action === 'seed' ? '正在清空…' : '确认清空映射';
     seedDialog.setAttribute('aria-busy', String(pending && action === 'seed'));
     errorButton.textContent = pending && action === 'errors' ? '正在读取…' : byId('error-tokens-section').hidden ? '查看错误凭据' : '刷新错误列表';
+    for (const [control, operation] of [[upload, 'upload'], [confirm, 'clear'], [errorButton, 'errors'], [seedConfirm, 'seed']]) {
+      control.setAttribute('aria-busy', String(pending && action === operation));
+    }
+    updateLineCount();
   }
 
   function clearNotices() {
@@ -88,6 +92,7 @@
   function updateLineCount() {
     const count = input.value.split(/\r?\n/).filter((line) => line.trim() && !line.trimStart().startsWith('#')).length;
     byId('token-line-count').textContent = `${count} 条待导入`;
+    upload.disabled = state.pending || state.sessionExpired || !count;
     return count;
   }
 
@@ -260,4 +265,5 @@
       setPending(false);
     }
   });
+  updateLineCount();
 })();
