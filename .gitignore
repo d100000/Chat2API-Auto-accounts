@@ -1,0 +1,29 @@
+# Local credentials and runtime state
+.env
+.env.*
+!.env.example
+/data/
+/warpdata/
+/tmp/
+/accounts*.txt
+/accounts*.json
+*.log
+*.pid
+
+# Machine-specific account diagnostics (kept locally, not distributed)
+/scripts/benchmark_account.py
+/scripts/probe_upstream_models.py
+/scripts/quota_endurance.py
+/scripts/summarize_endurance.py
+
+# Python and editor files
+__pycache__/
+*.py[cod]
+/.venv/
+/venv/
+/.idea/
+/.vscode/
+.DS_Store
+.pytest_cache/
+.coverage
+htmlcov/

@@ -1,0 +1,14 @@
+services:
+  chat2api:
+    build:
+      context: .
+    image: chat2api-auto-accounts:local
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:5005:5005'
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai

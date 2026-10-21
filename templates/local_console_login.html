@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>登录 · Chat2API 本地测试台</title>
+  <link rel="stylesheet" href="/static/local-console/console.css">
+  <script src="/static/local-console/login.js" defer></script>
+</head>
+<body class="login-page">
+  <main class="login-shell">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">C2</span><span>Chat2API<span class="brand-subtitle">本地工作区</span></span></div>
+    <section class="login-panel" aria-labelledby="login-title">
+      <p class="eyebrow">LOCAL CONSOLE</p>
+      <h1 id="login-title">登录本地测试台</h1>
+      <p class="login-description">查看账号状态，发送消息，验证 ChatGPT 反代的实际响应。</p>
+      <form id="login-form">
+        <div class="field">
+          <label for="username">用户名</label>
+          <input id="username" name="username" value="admin" autocomplete="username" required maxlength="80" autofocus>
+        </div>
+        <div class="field">
+          <label for="password">密码</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="256" aria-describedby="password-hint">
+          <p id="password-hint" class="field-hint">使用部署时提供的本地管理密码。</p>
+        </div>
+        <p id="login-error" class="notice notice-error" role="alert" hidden></p>
+        <button id="login-submit" class="button button-primary button-full" type="submit">登录测试台 <span aria-hidden="true">→</span></button>
+      </form>
+    </section>
+    <p class="login-footer"><span class="status-dot" aria-hidden="true"></span>本地部署 · 仅在当前设备访问</p>
+    <noscript><p class="notice notice-error">请启用 JavaScript 后登录。</p></noscript>
+  </main>
+</body>
+</html>
