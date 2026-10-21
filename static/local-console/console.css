@@ -232,14 +232,16 @@ dialog[open] { animation: ui-dialog-in var(--motion-normal) var(--ease-out); }
   :root { --page-inset: 24px; --sidebar-width: 260px; --panel-padding: 20px; }
   .topbar-inner { gap: var(--space-6); }
   .nav-link { padding-inline: var(--space-3); }
+  .workspace-nav .ui-icon { display: none; }
   .user-label { display: none; }
   .composer-actions > .field-hint { max-width: 160px; }
 }
 @media (max-width: 760px) {
   :root { --page-inset: 16px; --panel-padding: 20px; --topbar-height: 72px; --button-height: 44px; --control-height: 44px; --chat-min-height: 320px; }
   .topbar-inner { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); padding-bottom: var(--space-2); }
-  .workspace-nav { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .nav-link { padding-inline: var(--space-2); }
+  .workspace-nav { grid-column: 1 / -1; grid-row: 2; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .nav-link { padding-inline: var(--space-1); font-size: var(--type-xs); }
+  .workspace-nav .ui-icon { display: none; }
   .topbar-actions { gap: var(--space-2); }
   .user-label { display: none; }
   .topbar-actions .button { padding-left: var(--space-2); padding-right: var(--space-2); }

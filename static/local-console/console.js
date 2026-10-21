@@ -6,7 +6,7 @@
     'clear-button', 'quick-test', 'chat-messages', 'empty-state', 'turn-count', 'page-error',
     'request-state', 'request-time', 'request-http', 'first-token-time', 'service-status',
     'service-status-text', 'refresh-session', 'logout-button', 'request-options', 'copy-endpoint',
-    'configuration-summary',
+    'configuration-summary', 'request-mode', 'history-mode', 'image-url', 'system-prompt', 'advanced-options', 'image-mode-note',
   ].map((id) => [id, byId(id)]));
   const QUICK_PROMPT = '请只回复 OK。';
   const MAX_RAW_CHARS = 200000;
@@ -23,13 +23,14 @@
 
   function updateConfigurationSummary() {
     const model = ui.model.value.trim() || '未设置模型';
-    const label = `${model} · ${ui.stream.checked ? '流式' : '完整响应'}`;
+    const label = `${ui['request-mode'].value === 'image' ? '生图' : '对话'} · ${model} · ${ui.stream.checked ? '流式' : '完整响应'}`;
     ui['configuration-summary'].textContent = label;
     ui['configuration-summary'].title = label;
   }
 
   function invalidConfiguration(field, message) {
     ui['request-options'].open = true;
+    if (['max-tokens', 'history-mode', 'image-url', 'system-prompt'].includes(field.id)) ui['advanced-options'].open = true;
     field.setAttribute('aria-invalid', 'true');
     setError(message);
     field.focus();
@@ -43,13 +44,14 @@
   function updateControls() {
     const pending = Boolean(active);
     ui['send-button'].disabled = pending || !sessionReady || !ui.prompt.value.trim();
-    ui['send-button'].textContent = pending ? (active.firstTokenAt === null ? '等待回复…' : '正在接收…') : '发送消息 ↑';
+    ui['send-button'].textContent = pending ? (active.firstTokenAt === null ? '等待回复…' : '正在接收…') : ui['request-mode'].value === 'image' ? '请求生图 ↑' : '发送消息 ↑';
     ui['send-button'].setAttribute('aria-busy', String(pending));
     ui['quick-test'].disabled = pending || !sessionReady;
+    ui['quick-test'].textContent = ui['request-mode'].value === 'image' ? '填入生图示例' : '运行最小测试';
     ui['clear-button'].disabled = pending || !ui['chat-messages'].querySelector('.exchange');
     ui['stop-button'].hidden = !pending;
     ui.prompt.readOnly = pending;
-    for (const key of ['model', 'max-tokens', 'stream']) ui[key].disabled = pending;
+    for (const key of ['model', 'max-tokens', 'stream', 'request-mode', 'history-mode', 'image-url', 'system-prompt']) ui[key].disabled = pending;
     ui['chat-messages'].setAttribute('aria-busy', String(pending));
   }
 
@@ -268,6 +270,37 @@
     }
   }
 
+  function httpUrl(value) {
+    try {
+      const url = new URL(value);
+      return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+    } catch (_) { return null; }
+  }
+
+  function showImageLinks(request) {
+    const links = [...request.answer.matchAll(/!\[(?:image|图片)[^\]]*\]\((https?:\/\/[^\s)]+)\)/gi)].map((match) => httpUrl(match[1])).filter(Boolean);
+    if (!links.length) return;
+    const gallery = element('div', 'response-images');
+    [...new Set(links)].slice(0, 4).forEach((url, index) => {
+      const figure = element('figure');
+      const image = element('img'); image.src = url; image.alt = `上游返回的图片 ${index + 1}`; image.loading = 'lazy'; image.referrerPolicy = 'no-referrer';
+      const caption = element('figcaption');
+      const link = element('a', '', `打开图片 ${index + 1} ↗`); link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+      caption.append(link);
+      image.addEventListener('error', () => { image.hidden = true; caption.append(element('span', 'field-hint', '图片预览未加载；链接可能已过期。')); });
+      figure.append(image, caption); gallery.append(figure);
+    });
+    request.view.content.after(gallery);
+  }
+
+  function selectMode() {
+    const image = ui['request-mode'].value === 'image';
+    ui['image-mode-note'].hidden = !image;
+    if (image) { ui['history-mode'].value = 'false'; ui['advanced-options'].open = true; }
+    ui.prompt.placeholder = image ? '描述要生成的画面，例如：请生成一张蓝色圆形图案…' : '输入消息，开始测试…';
+    updateConfigurationSummary(); updateControls();
+  }
+
   async function sendMessage(quick = false) {
     if (active || !sessionReady) return;
     const prompt = quick ? QUICK_PROMPT : ui.prompt.value.trim();
@@ -276,9 +309,18 @@
     if (!prompt) { ui.prompt.focus(); return; }
     if (!model) { invalidConfiguration(ui.model, '请输入模型名称，例如 auto。'); return; }
     if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 4096) { invalidConfiguration(ui['max-tokens'], '最大输出 Token 需要是 1–4096 的整数。'); return; }
+    const imageUrl = ui['image-url'].value.trim();
+    if (imageUrl && !httpUrl(imageUrl)) { invalidConfiguration(ui['image-url'], '图片地址需要是有效的 HTTP(S) URL，不能包含用户名或密码。'); return; }
+    if (ui['request-mode'].value === 'image' && ui['history-mode'].value !== 'false') { invalidConfiguration(ui['history-mode'], '对话生图请明确选择「普通会话」，上游可能保留此会话。'); return; }
     if (quick && !ui.prompt.value.trim()) ui.prompt.value = QUICK_PROMPT;
     const originalInput = ui.prompt.value;
     const stream = ui.stream.checked;
+    const content = imageUrl ? [{ type: 'text', text: prompt }, { type: 'image_url', image_url: { url: httpUrl(imageUrl), detail: 'auto' } }] : prompt;
+    const currentMessage = { role: 'user', content };
+    const system = ui['system-prompt'].value.trim();
+    const messages = [...(system ? [{ role: 'system', content: system }] : []), ...history, currentMessage];
+    const payload = { model, messages, stream, max_tokens: maxTokens, quota_feature: ui['request-mode'].value === 'image' ? 'image_gen' : 'auto' };
+    if (ui['history-mode'].value !== 'default') payload.history_disabled = ui['history-mode'].value === 'true';
     const request = {
       id: ++requestSequence,
       controller: new AbortController(),
@@ -287,7 +329,7 @@
       answer: '',
       rawEntries: [],
       rawChars: 0,
-      view: addExchange(prompt, model),
+      view: addExchange(`${prompt}${imageUrl ? '\n[附带图片 URL]' : ''}`, model),
     };
     active = request;
     setError();
@@ -310,7 +352,7 @@
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', Accept: stream ? 'text/event-stream' : 'application/json' },
-        body: JSON.stringify({ model, messages: [...history, { role: 'user', content: prompt }], stream, max_tokens: maxTokens }),
+        body: JSON.stringify(payload),
         signal: request.controller.signal,
       });
       if (active?.id !== request.id) return;
@@ -338,7 +380,9 @@
       if (request.controller.signal.aborted) throw new DOMException('Request aborted', 'AbortError');
       if (active?.id !== request.id) return;
       if (!request.answer.trim()) throw new Error('请求已返回，但没有可显示的文本内容。请查看原始响应。');
-      history = [...history, { role: 'user', content: prompt }, { role: 'assistant', content: request.answer }];
+      history = [...history, currentMessage, { role: 'assistant', content: request.answer }];
+      showImageLinks(request);
+      if (ui['image-url'].value.trim() === imageUrl) ui['image-url'].value = '';
       ui['turn-count'].textContent = `${history.length / 2} 轮对话`;
       setRequestState('请求成功', 'success');
       request.view.state.textContent = finishReason === 'length' ? '已完成 · 达到输出长度限制，可增加 Token 后重试' : '已完成 · 已加入本次会话上下文';
@@ -382,17 +426,22 @@
       void sendMessage();
     }
   });
-  for (const name of ['model', 'max-tokens']) {
+  for (const name of ['model', 'max-tokens', 'image-url', 'system-prompt']) {
     ui[name].addEventListener('input', () => {
       ui[name].removeAttribute('aria-invalid');
       updateConfigurationSummary();
     });
   }
   ui.stream.addEventListener('change', updateConfigurationSummary);
+  ui['request-mode'].addEventListener('change', selectMode);
+  ui['history-mode'].addEventListener('change', () => ui['history-mode'].removeAttribute('aria-invalid'));
   ui['copy-endpoint'].addEventListener('click', async () => {
     await window.ConsoleUI.copyText(byId('base-url').textContent, ui['copy-endpoint']);
   });
-  ui['quick-test'].addEventListener('click', () => { void sendMessage(true); });
+  ui['quick-test'].addEventListener('click', () => {
+    if (ui['request-mode'].value === 'image') { ui.prompt.value = '请生成一张白色背景上的蓝色圆形图案。'; updateControls(); ui.prompt.focus(); return; }
+    void sendMessage(true);
+  });
   ui['refresh-session'].addEventListener('click', () => { void refreshSession(); });
   ui['stop-button'].addEventListener('click', () => {
     if (!active) return;
@@ -427,7 +476,7 @@
       ui['logout-button'].disabled = false;
     }
   });
-  updateConfigurationSummary();
-  updateControls();
+  if (new URLSearchParams(window.location.search).get('mode') === 'image') ui['request-mode'].value = 'image';
+  selectMode();
   void refreshSession();
 })();

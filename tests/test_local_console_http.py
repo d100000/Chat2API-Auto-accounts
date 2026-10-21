@@ -76,17 +76,17 @@ class LocalConsoleHTTPTests(unittest.TestCase):
         # virtual environment out of the checkout being tested.
         for filename in ("app.py", "version.txt"):
             shutil.copy2(ROOT / filename, cls.workdir / filename)
-        for package in ("api", "chatgpt", "utils"):
+        for package in ("api", "chatgpt", "utils", "scripts", "gateway"):
             for source in (ROOT / package).rglob("*.py"):
                 target = cls.workdir / source.relative_to(ROOT)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
         (cls.workdir / "templates").mkdir()
-        for filename in ("local_console.html", "local_console_login.html", "local_accounts.html", "tokens.html", "_workspace_header.html"):
+        for filename in ("local_console.html", "local_console_login.html", "local_accounts.html", "tokens.html", "_workspace_header.html", "local_connection.html", "local_features.html", "login.html", "chatgpt.html", "chatgpt_context_1.json", "chatgpt_context_2.json", "gpts_context.json", "initialize.json"):
             shutil.copy2(ROOT / "templates" / filename, cls.workdir / "templates" / filename)
         assets = cls.workdir / "static/local-console"
         assets.mkdir(parents=True)
-        for filename in ("console.css", "console.js", "login.js", "accounts.css", "accounts.js", "ui.js", "playground.css", "tokens.css", "tokens.js"):
+        for filename in ("console.css", "console.js", "login.js", "accounts.css", "accounts.js", "ui.js", "playground.css", "tokens.css", "tokens.js", "connection.css", "connection.js", "features.css", "features.js"):
             shutil.copy2(ROOT / "static/local-console" / filename, assets / filename)
         (cls.workdir / ".env").write_text("", encoding="ascii")
         (cls.workdir / "data").mkdir()
@@ -120,6 +120,7 @@ class LocalConsoleHTTPTests(unittest.TestCase):
             "AUTO_SEED": "true",
             "API_PREFIX": "",
         })
+        cls.server_env = env
         cls.server_log = (cls.workdir / "server.log").open("w+", encoding="utf-8")
         cls.addClassCleanup(cls.server_log.close)
         cls.process = subprocess.Popen(
@@ -186,13 +187,17 @@ class LocalConsoleHTTPTests(unittest.TestCase):
         return response
 
     def test_unauthenticated_routes(self):
-        for path in ("/playground", "/tokens", "/accounts"):
+        for path in ("/playground", "/tokens", "/accounts", "/connection", "/features"):
             with self.subTest(path=path):
                 response = self.client.get(self.base + path)
                 self.assertEqual(response.status_code, 303)
                 self.assertEqual(response.headers["Location"], "/login")
         self.assertEqual(self.client.get(self.base + "/local-console/session").status_code, 401)
         self.assertEqual(self.client.get(self.base + "/local-console/accounts").status_code, 401)
+        for path in ("/local-console/connection", "/local-console/features", "/local-console/api-keys"):
+            self.assertEqual(self.client.get(self.base + path).status_code, 401)
+        self.assertEqual(self.client.post(self.base + "/local-console/connection/key").status_code, 401)
+        self.assertEqual(self.client.post(self.base + "/local-console/api-keys", json={"name": "Denied"}).status_code, 401)
         self.assertEqual(self.client.post(self.base + "/local-console/accounts/refresh", json={}).status_code, 401)
         self.assertEqual(self.client.post(self.base + "/tokens/error").status_code, 401)
         body = {"messages": [{"role": "user", "content": "Never send this to a model."}]}
@@ -243,6 +248,9 @@ class LocalConsoleHTTPTests(unittest.TestCase):
                 self.assertEqual(self.client.post(self.base + "/local-console/logout").status_code, 403)
                 self.assertEqual(self.client.post(self.base + "/local-console/accounts/refresh", json={}).status_code, 403)
                 self.assertEqual(self.client.post(self.base + "/local-console/login", json=self.login).status_code, 403)
+                self.assertEqual(self.client.post(self.base + "/local-console/connection/key").status_code, 403)
+                self.assertEqual(self.client.post(self.base + "/local-console/api-keys", json={"name": "Denied"}).status_code, 403)
+                self.assertEqual(self.client.delete(self.base + "/local-console/api-keys/missing").status_code, 403)
         self.client.headers["Origin"] = CONSOLE_ORIGIN
         self.assertEqual(self.client.get(self.base + "/local-console/session").status_code, 200)
 
@@ -250,6 +258,8 @@ class LocalConsoleHTTPTests(unittest.TestCase):
         self.client.headers["Host"] = "example.invalid"
         self.assertEqual(self.client.get(self.base + "/login").status_code, 400)
         self.assertEqual(self.client.get(self.base + "/accounts").status_code, 400)
+        self.assertEqual(self.client.get(self.base + "/connection").status_code, 400)
+        self.assertEqual(self.client.get(self.base + "/features").status_code, 400)
         self.assertEqual(self.client.get(self.base + "/local-console/accounts").status_code, 400)
         self.assertEqual(self.client.post(self.base + "/local-console/login", json=self.login).status_code, 400)
 
@@ -263,6 +273,109 @@ class LocalConsoleHTTPTests(unittest.TestCase):
                 self.assertIn("尚未配置", response.json()["detail"])
         invalid = {"messages": [], "max_tokens": 99999}
         self.assertEqual(self.client.post(self.base + "/local-console/chat", json=invalid).status_code, 422)
+
+    def test_connection_secret_requires_explicit_authenticated_post(self):
+        self.log_in()
+        for path in ("/connection", "/features", "/local-console/connection", "/local-console/features", "/local-console/api-keys"):
+            response = self.client.get(self.base + path)
+            self.assertEqual(response.status_code, 200, path)
+            self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+            self.assertNotIn(self.api_key, response.text)
+            self.assertNotIn(self.login["password"], response.text)
+        response = self.client.post(self.base + "/local-console/connection/key")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"api_key": self.api_key})
+        self.assertEqual(response.headers.get("Cache-Control"), "no-store")
+        self.assertNotEqual(self.client.get(self.base + "/local-console/connection/key").status_code, 200)
+
+    def test_managed_keys_lifecycle_and_immediate_authentication(self):
+        self.log_in()
+        endpoint = self.base + "/local-console/api-keys"
+        self.assertEqual(self.client.post(endpoint, json={"name": "   "}).status_code, 422)
+        result = self.client.post(endpoint, json={"name": "Offline client"})
+        self.assertEqual(result.status_code, 200)
+        created = result.json()
+        plaintext, identifier = created["api_key"], created["key"]["id"]
+        headers = {"Authorization": "Bearer " + plaintext}
+        self.assertEqual(self.client.get(self.base + "/v1/models", headers=headers).status_code, 200)
+        listing = self.client.get(endpoint)
+        self.assertNotIn(plaintext, listing.text)
+        self.assertNotIn("key_hash", listing.text)
+        row = next(row for row in listing.json()["keys"] if row["id"] == identifier)
+        self.assertEqual(row["request_count"], 0)
+        # A valid key routes to the empty pool without making an upstream call.
+        body = {"messages": [{"role": "user", "content": "Offline only"}], "model": "auto", "stream": False}
+        self.assertEqual(self.client.post(self.base + "/v1/chat/completions", headers=headers, json=body).status_code, 429)
+        row = next(row for row in self.client.get(endpoint).json()["keys"] if row["id"] == identifier)
+        self.assertEqual(row["request_count"], 1)
+        self.assertIsNotNone(row["last_used_at"])
+        self.assertEqual(self.client.patch(endpoint + "/" + identifier, json={"status": "disabled"}).status_code, 200)
+        for path, method, arguments in (("/v1/models", "get", {}), ("/v1/chat/completions", "post", {"json": body})):
+            self.assertEqual(getattr(self.client, method)(self.base + path, headers=headers, **arguments).status_code, 401)
+        self.assertEqual(self.client.patch(endpoint + "/" + identifier, json={"status": "active"}).status_code, 200)
+        self.assertEqual(self.client.get(self.base + "/v1/models", headers=headers).status_code, 200)
+        self.assertEqual(self.client.delete(endpoint + "/" + identifier).status_code, 200)
+        self.assertEqual(self.client.get(self.base + "/v1/models", headers=headers).status_code, 401)
+        self.assertEqual(self.client.patch(endpoint + "/" + identifier, json={"status": "active"}).status_code, 409)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.delete(endpoint + "/" + identifier).status_code, 401)
+
+    def test_reserved_managed_key_and_model_list_reject_unknown_keys(self):
+        for key in ("sk-c2a-invalid", "sk-c2a-", "not-configured"):
+            headers = {"Authorization": "Bearer " + key}
+            self.assertEqual(self.client.get(self.base + "/v1/models", headers=headers).status_code, 401)
+            if key.startswith("sk-c2a-"):
+                self.assertEqual(self.client.post(self.base + "/v1/chat/completions", headers=headers, json={}).status_code, 401)
+        self.assertEqual(self.client.get(self.base + "/v1/models", headers={"Authorization": "Bearer " + self.api_key}).status_code, 200)
+
+    def test_original_web_gateway_can_coexist_with_admin_console(self):
+        previous_port = (self.workdir / "port").read_text()
+        with (self.workdir / "gateway-test.log").open("w+") as log:
+            child = subprocess.Popen([sys.executable, "-I", str(self.workdir / "run_test_server.py")],
+                cwd=self.workdir, env={**self.server_env, "ENABLE_GATEWAY": "true"},
+                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 15
+                ready = False
+                while time.monotonic() < deadline and child.poll() is None:
+                    port = (self.workdir / "port").read_text().strip()
+                    if port and port != previous_port.strip():
+                        base = "http://127.0.0.1:" + port
+                        try:
+                            ready = self.client.get(base + "/login", timeout=.5).status_code == 200
+                        except requests.RequestsError:
+                            pass
+                        if ready:
+                            break
+                    time.sleep(.05)
+                log.flush()
+                self.assertTrue(ready, (self.workdir / "gateway-test.log").read_text()[-3000:])
+                self.assertIn("登录工作区", self.client.get(base + "/login").text)
+                for route in ("/gateway", "/gateway/login", "/gpts"):
+                    response = self.client.get(base + route)
+                    self.assertEqual(response.status_code, 200, route)
+                    self.assertIn("/gateway?token=", response.text)
+                self.assertEqual(self.client.get(base + "/seedtoken").status_code, 403)
+                self.assertEqual(self.client.get(base + "/docs").status_code, 200)
+            finally:
+                child.terminate()
+                try:
+                    child.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    child.wait(timeout=5)
+
+    def test_multimodal_chat_validation_and_image_quota_hint(self):
+        self.log_in()
+        body = {"model": "auto", "history_disabled": False, "quota_feature": "image_gen", "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "Offline validation only"},
+                {"type": "image_url", "image_url": {"url": "https://example.invalid/image.png"}}]}]}
+        self.assertEqual(self.client.post(self.base + "/local-console/chat", json=body).status_code, 503)
+        for url in ("file:///etc/passwd", "javascript:alert(1)", "data:text/html;base64,AAAA", "https://user:secret@example.invalid/image"):
+            invalid = {**body, "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": url}}]}]}
+            self.assertEqual(self.client.post(self.base + "/local-console/chat", json=invalid).status_code, 422)
+        self.assertEqual(self.client.post(self.base + "/local-console/chat", json={**body, "quota_feature": "invalid"}).status_code, 422)
 
     def test_accounts_empty_state_refresh_and_invalid_identifier(self):
         self.log_in()

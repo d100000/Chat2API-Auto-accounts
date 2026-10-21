@@ -1,6 +1,6 @@
 # Chat2API Auto Accounts
 
-把已登录的 ChatGPT 网页账号接入本地服务，供支持 OpenAI Chat Completions 格式的客户端调用。项目基于 Python / FastAPI，按大模型和生图剩余额度选择账号，并提供管理员登录、聊天测试台、用量统计和调度状态页面。
+把已登录的 ChatGPT 网页账号接入服务，供支持 OpenAI Chat Completions 格式的客户端调用。项目基于 Python / FastAPI，把原版 Chat2API 的聊天、图文和凭据能力，与账号额度、自动调度、API 密钥管理整合到一个管理工作区。
 
 ```text
 兼容客户端 / 本地测试台
@@ -21,6 +21,10 @@ ChatGPT 网页接口 → 转换为 JSON / SSE 聊天响应
 - **Token 池**：从文件或管理页面导入凭据，合并可识别的同账号 Token，并排除已记录的异常或过期凭据。
 - **本地管理登录**：使用用户名和 PBKDF2 密码哈希登录，保护测试台和 Token 管理入口。
 - **浏览器测试台**：发送消息、临时多轮对话、切换流式响应、查看 HTTP 状态、耗时和首字时间。页面会显示本地 Token 数量与异常标记数量。
+- **图片测试**：测试台支持图片 URL 输入和生图模式；生图仍通过 Chat Completions，请求启用历史并按 `image_gen` 额度调度，实际输出取决于上游账号能力。
+- **API 密钥管理**：按用途创建独立应用密钥、停用、恢复和撤销，查看最近使用时间与受理次数；密钥明文只在创建时返回一次，数据库只存摘要。
+- **API 接入**：复制本机或临时公网 Base URL，查看本机流式和公网非流式 cURL 示例；`GET /v1/models` 返回默认 `auto`，不冒充上游模型发现。
+- **原功能入口**：统一展示原网页网关、GPTs、Seed 管理、Token 刷新与运行配置；保留继承路由，明确显示是否启用和调用条件。
 - **账号与额度**：查看 ChatGPT 网页返回的大模型 `reason`、生图 `image_gen` 剩余量、重置时间，以及其他功能和模型限制；支持单账号或全部账号刷新。
 - **调度状态**：查看各能力是否可选、执行中的请求、等待刷新或冷却的原因，以及最近的账号选择、切换、耗尽和恢复事件。
 - **本地用量记录**：按账号记录调用尝试、成功、失败、取消、中断，以及上游返回的图片资产数量，支持近期统计和模型标签对照。
@@ -31,10 +35,10 @@ ChatGPT 网页接口 → 转换为 JSON / SSE 聊天响应
 ## 使用边界
 
 - 建议先使用 `model: "auto"`。代码保留了一些模型别名与回退逻辑；响应里的 `model` 标签不能证明实际使用了同名底层模型，也不代表该模型当前可用。
-- 默认配置的兼容范围以现有聊天接口为准。**没有实现标准 `/v1/images/generations`、`/v1/images/edits` 或 `/v1/responses` 路由**，也没有供客户端自动发现模型的 `/v1/models` 路由。上游聊天可能返回图片内容，这不等于提供标准 Images API。
+- 默认配置的兼容范围以现有聊天接口为准。**没有实现标准 `/v1/images/generations`、`/v1/images/edits` 或 `/v1/responses` 路由**。`/v1/models` 仅列出默认 `auto`，不表示已探测所有上游模型。上游聊天可能返回图片内容，这不等于提供标准 Images API。
 - 额度页面展示查询时的上游快照，调度器另行记录本地预留。未返回的额度保持未知，不能用本地调用次数推算官方余额，也不提供“无限使用”能力。
 - 测试台的聊天记录只存在于当前页面，刷新或退出后清空。`max_tokens` 等参数不保证被网页上游严格执行。
-- 当前部署要求**单进程、单 worker**，不要添加 `--workers` 或多个服务副本：登录会话、刷新限频和并发控制保存在进程内，本地账本也按单进程重启恢复未完成请求。管理页面固定使用 `127.0.0.1:5005` 或 `localhost:5005`；公网或多实例部署需要另行设计访问控制和协调机制。
+- 当前部署要求主服务和可选公网网关分别使用**单进程、单 worker**，不要添加 `--workers` 或多个主服务副本：登录会话、刷新限频和并发控制保存在进程内，本地账本也按单进程重启恢复未完成请求。管理页面固定使用 `127.0.0.1:5005` 或 `localhost:5005`；临时公网只开放独立的 API 网关。
 
 ## 本地安装
 
@@ -125,6 +129,8 @@ python -m uvicorn app:app --host 127.0.0.1 --port 5005 --no-access-log
 - [聊天测试台](http://127.0.0.1:5005/playground)：可先点“运行最小测试”，再继续对话。
 - [账号与额度](http://127.0.0.1:5005/accounts)：查看剩余额度、调度状态、切换动态和本地调用记录。
 - [Token 管理](http://127.0.0.1:5005/tokens)：导入或清空 Token 池。
+- [API 接入与密钥](http://127.0.0.1:5005/connection)：创建应用密钥，管理启停，复制调用配置。
+- [功能与设置](http://127.0.0.1:5005/features)：查看原项目能力、入口和当前运行配置。
 
 管理员登录状态保存在服务进程内，重启后需要重新登录。测试台显示“已连接”仅表示本地服务可访问；上游是否可用以聊天请求结果为准。
 
@@ -137,6 +143,48 @@ python scripts/local_service.py stop
 ```
 
 后台日志位于 `data/server.log`。前台命令和后台脚本选一种启动即可。
+
+## API 密钥与外部调用
+
+管理员密码用于登录后台；网页账号凭据用于访问 ChatGPT；API 密钥用于让客户端调用本服务，三者不同。
+
+在 `/connection` 的「密钥管理」页签中，按客户端用途创建应用密钥，例如“云服务器”或“本地客户端”。新密钥只在创建弹窗出现一次，请复制保存。之后列表只显示掩码，可立即停用或恢复；撤销不可恢复。密钥保存在 `data/api-keys.sqlite3`，权限为 `0600`，只存随机密钥的 SHA-256 摘要和管理元数据。
+
+每个应用密钥使用同一账号池和额度调度。列表的「受理次数」统计通过基本鉴权和消息格式校验的聊天请求，包括后续失败的调用，不等于成功次数或官方计费次数；模型列表请求不计数。已有 `.env` 的 `AUTHORIZATION` 系统密钥继续兼容，在页面单独显示，须编辑环境配置后重启才能更换。应用密钥的启停、撤销无需重启，已在执行中的请求不会被强制中断。
+
+```bash
+export CHAT2API_KEY='YOUR_APPLICATION_KEY'
+curl http://127.0.0.1:5005/v1/chat/completions \
+  -H "Authorization: Bearer $CHAT2API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"你好"}],"stream":false}'
+```
+
+### 临时 HTTPS 联调
+
+安装 [Cloudflare cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)，先启动主服务，再运行：
+
+```bash
+python scripts/public_service.py start
+python scripts/public_service.py status
+python scripts/public_service.py stop
+```
+
+脚本启动仅监听 `127.0.0.1:5006` 的独立 API 网关，再创建随机 `https://*.trycloudflare.com` 地址。实际 Base URL 会显示在 `/connection`；每次重新创建隧道可能变化。Mac、主服务和隧道都需在线，停止隧道后地址失效。此方式用于联调，不提供生产可用性保证。
+
+公网仅开放带 API Key 的 `POST /v1/chat/completions` 和 `GET /v1/models`，拒绝直接网页账号凭据；后台、账号、凭据、Seed 与文档路由不会通过此网关公开。网关每次读取应用密钥状态，撤销立即影响后续请求。单请求正文上限 2 MiB，同时最多受理 10 个请求，不自动重放生成请求。公网图文输入只接受内联 data:image（PNG/JPEG/WebP/GIF），每图解码后不超过 1 MiB；HTTP(S) 图片 URL 输入保留在私有本机服务。公网启动要求 UPLOAD_BY_URL=false，防止外部请求让服务读取本机或内网文件。
+
+[Cloudflare Quick Tunnel 不支持 SSE](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)，公网联调必须使用 `stream:false`；`stream:true` 会明确返回 400。本机流式聊天仍可正常使用。不要直接把完整的 5005 服务转发到公网。
+
+## 原版功能与统一后台
+
+本仓库是在 `lanqian528/chat2api` 上增加管理功能，不是 Electron 多供应商桌面项目。原有聊天协议转换、模型映射、图文消息、工具输出、网页会话参数、Token 管理、Refresh Token 刷新、Seed 和网页网关代码均保留；`/features` 按当前配置列出入口和限制。
+
+- 普通聊天和生图可在 `/playground` 直接测试；图文输入支持 Chat Completions 的 `text` / `image_url` 消息。生图模式使用 `history_disabled:false`，不会伪造独立 Images API。
+- `/tokens` 提供批量导入、错误凭据查看、清空账号池及清空 Seed 会话映射。清空操作需要在页面确认。
+- 账号详情分为「概览、调度、更多额度、模型记录」，原有信息仍保留，默认只展示常用概览。
+- 继承的网页网关默认 `ENABLE_GATEWAY=false`。启用并重启后，`/gateway`、`/gateway/login` 为原网页入口，`/gpts`、`/seedtoken`、`/auth/refresh` 等继承路由生效；管理员仍使用 `/login`，无需覆盖后台入口。网关使用继承的网页资源，上游兼容性需按实际账号验证。
+- 共享账号池使用 messages 重建多轮上下文，不接受显式 `conversation_id`、`parent_message_id` 或工作区覆盖，以免把会话切换到错误账号；需要这些原参数时使用原有直接账号凭据调用方式，仅限私有本机服务。
 
 ## 账号额度与本地用量
 
@@ -282,7 +330,7 @@ docker compose down
 
 ## 开发验证
 
-界面由 Jinja 模板和本地 JavaScript / CSS 构成，四个工作区页面共用导航、控件、颜色和动效。交互与适配约定见 [界面设计规范](DESIGN.md)。无需安装前端构建工具，也不依赖外部样式 CDN。
+界面由 Jinja 模板和本地 JavaScript / CSS 构成，五个工作区页面共用导航、控件、颜色和动效。交互与适配约定见 [界面设计规范](DESIGN.md)。无需安装前端构建工具，也不依赖外部样式 CDN。
 
 安装依赖后，可运行全部离线测试：
 

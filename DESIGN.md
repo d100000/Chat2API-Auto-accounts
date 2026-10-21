@@ -1,12 +1,12 @@
 # 本地工作区界面规范
 
-适用范围：`/login`、`/playground`、`/accounts`、`/tokens`。这是用于管理账号和核验反代请求的操作界面，优先保证数据可读、状态真实、操作可恢复。
+适用范围：`/login`、`/playground`、`/accounts`、`/tokens`、`/connection`、`/features`。这是用于管理账号和核验反代请求的操作界面，优先保证数据可读、状态真实、操作可恢复。
 
 参考 [Animate UI](https://animate-ui.com/) 的控件反馈、展开连续性和简洁层次。现有页面使用 Jinja + 原生 JavaScript，交互通过 CSS 和浏览器原生控件实现，不引入 React 运行时、动画库或外部 CDN。
 
 ## 视觉基础
 
-全局变量和基础控件定义在 `static/local-console/console.css`。页面布局分别放在 `playground.css`、`accounts.css`、`tokens.css`。
+全局变量和基础控件定义在 `static/local-console/console.css`。页面布局分别放在 `playground.css`、`accounts.css`、`tokens.css`、`connection.css`、`features.css`。
 
 | 类别 | 约定 |
 | --- | --- |
@@ -22,7 +22,7 @@
 
 ## 共用结构与交互
 
-- `_workspace_header.html` 是已登录页面的唯一导航来源。当前页面使用 `aria-current="page"`；三个入口始终可见，窄屏自动换为第二行。
+- `_workspace_header.html` 是已登录页面的唯一导航来源。当前页面使用 `aria-current="page"`；五个入口始终可见，窄屏自动换为第二行。
 - 使用 `.button-primary`、`.button-secondary`、`.button-quiet`、`.button-danger`。同一区域仅突出当前主要动作。
 - 加载时提供具体文案和 `aria-busy`；不可用操作使用真正的 `disabled`。错误留在对应表单附近，不能仅弹出短暂提示。
 - 复制使用 `ConsoleUI.copyText()`，成功显示“已复制”，失败保留内容并提示手动复制。`ConsoleUI.toast()` 仅承载非阻塞反馈，不包含凭据。
@@ -47,6 +47,8 @@
 - **测试台**：请求参数与对话区域区分；窄屏参数可折叠。发送、停止、失败和完成必须有明确反馈。聊天仅在当前页面保存。
 - **账号与额度**：先展示总体状态和调度情况，再提供搜索、筛选和详情。上游余额、本地统计和调度估算必须分别标注。未知不显示为零，总量未知不生成使用百分比。
 - **导入凭据**：本地表单原位反馈，不跳到 JSON 文本页。错误凭据默认遮罩；显示与复制必须由用户主动触发。
+- **API 接入与密钥**：连接参数、应用密钥、调用示例分开显示。系统密钥与应用密钥区分；列表不含明文，创建结果只能在明确保存后关闭，撤销需要确认。
+- **功能与设置**：以源码和当前配置显示原有能力与实际入口；未开启与未实现须区别说明，不伪造可用状态。
 - **登录**：单一登录任务；密码可显示或隐藏，错误与输入建立关联，不记录或持久化明文密码。
 
 ## 适配与验收

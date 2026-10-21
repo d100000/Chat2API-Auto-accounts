@@ -18,10 +18,11 @@ access_format = r'%(asctime)s | %(levelname)s | %(client_addr)s: %(request_line)
 log_config["formatters"]["default"]["fmt"] = default_format
 log_config["formatters"]["access"]["fmt"] = access_format
 
+route_prefix = f"/{api_prefix}" if api_prefix else ""
 app = FastAPI(
-    docs_url=f"/{api_prefix}/docs",    # 设置 Swagger UI 文档路径
-    redoc_url=f"/{api_prefix}/redoc",  # 设置 Redoc 文档路径
-    openapi_url=f"/{api_prefix}/openapi.json"  # 设置 OpenAPI JSON 路径
+    docs_url=f"{route_prefix}/docs",
+    redoc_url=f"{route_prefix}/redoc",
+    openapi_url=f"{route_prefix}/openapi.json",
 )
 
 app.add_middleware(
@@ -33,6 +34,7 @@ app.add_middleware(
 )
 
 templates = Jinja2Templates(directory="templates")
+templates.env.globals["api_prefix"] = api_prefix or ""
 security_scheme = HTTPBearer()
 
 from app import app
@@ -41,6 +43,8 @@ import api.chat2api
 
 if os.environ.get("LOCAL_CONSOLE_ENABLED", "false").lower() == "true":
     import api.local_console
+    import api.key_management
+    import api.features_console
 
 if enable_gateway:
     import gateway.share

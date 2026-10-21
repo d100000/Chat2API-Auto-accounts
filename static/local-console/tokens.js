@@ -13,6 +13,10 @@
   const cancel = byId('clear-cancel');
   const reveal = byId('error-token-reveal');
   const copy = byId('error-token-copy');
+  const seedClear = byId('seed-clear');
+  const seedDialog = byId('seed-dialog');
+  const seedCancel = byId('seed-cancel');
+  const seedConfirm = byId('seed-confirm');
   const prefix = document.body.dataset.apiPrefix || '';
   const base = prefix ? `/${prefix}/tokens` : '/tokens';
   let state = { pending: false, action: null, errors: [], revealed: false, sessionExpired: false };
@@ -21,11 +25,13 @@
     state = { ...state, pending, action };
     form.setAttribute('aria-busy', String(pending && action === 'upload'));
     dialog.setAttribute('aria-busy', String(pending && action === 'clear'));
-    for (const control of [input, upload, clear, errorButton, reveal, copy, confirm, cancel, byId('tokens-logout')]) {
+    for (const control of [input, upload, clear, errorButton, reveal, copy, confirm, cancel, seedClear, seedCancel, seedConfirm, byId('tokens-logout')]) {
       control.disabled = pending || state.sessionExpired;
     }
     upload.textContent = pending && action === 'upload' ? '正在导入…' : '导入凭据 ↑';
     confirm.textContent = pending && action === 'clear' ? '正在清空…' : '确认清空';
+    seedConfirm.textContent = pending && action === 'seed' ? '正在清空…' : '确认清空映射';
+    seedDialog.setAttribute('aria-busy', String(pending && action === 'seed'));
     errorButton.textContent = pending && action === 'errors' ? '正在读取…' : byId('error-tokens-section').hidden ? '查看错误凭据' : '刷新错误列表';
   }
 
@@ -33,6 +39,7 @@
     error.hidden = true;
     feedback.hidden = true;
     byId('clear-dialog-error').hidden = true;
+    byId('seed-dialog-error').hidden = true;
   }
 
   function showError(cause, target = error) {
@@ -221,6 +228,35 @@
       window.location.assign('/login');
     } catch (cause) {
       showError(cause);
+      setPending(false);
+    }
+  });
+
+  seedClear.addEventListener('click', () => {
+    if (state.pending || state.sessionExpired) return;
+    clearNotices();
+    seedDialog.showModal();
+    seedCancel.focus();
+  });
+  seedCancel.addEventListener('click', () => seedDialog.close());
+  seedDialog.addEventListener('cancel', (event) => {
+    if (state.pending) event.preventDefault();
+  });
+  seedDialog.addEventListener('close', () => seedClear.focus());
+  byId('seedForm').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (state.pending || state.sessionExpired) return;
+    clearNotices();
+    setPending(true, 'seed');
+    try {
+      const data = await request(`${prefix ? `/${prefix}` : ''}/seed_tokens/clear`);
+      if (data.status !== 'success') throw new Error('服务未确认清空结果，请检查后再试。');
+      seedDialog.close();
+      showSuccess('Seed 与会话映射已清空，账号凭据已保留。');
+    } catch (cause) {
+      if (state.sessionExpired) seedDialog.close();
+      showError(cause, state.sessionExpired ? error : byId('seed-dialog-error'));
+    } finally {
       setPending(false);
     }
   });

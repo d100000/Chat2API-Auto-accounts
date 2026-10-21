@@ -74,7 +74,7 @@
 
         function submitToken() {
             var inputValue = document.getElementById('popup-input').value;
-            window.location.href = '/?token=' + inputValue;
+            window.location.href = '/gateway?token=' + encodeURIComponent(inputValue);
             closePopup();
         }
     </script>

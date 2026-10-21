@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>Chat2API · 本地测试台</title>
-  <link rel="stylesheet" href="/static/local-console/console.css?v=20261021">
-  <link rel="stylesheet" href="/static/local-console/playground.css?v=20261021">
-  <script src="/static/local-console/ui.js?v=20261021" defer></script>
-  <script src="/static/local-console/console.js?v=20261021" defer></script>
+  <link rel="stylesheet" href="/static/local-console/console.css?v=20261021c">
+  <link rel="stylesheet" href="/static/local-console/playground.css?v=20261022">
+  <script src="/static/local-console/ui.js?v=20261021c" defer></script>
+  <script src="/static/local-console/console.js?v=20261022" defer></script>
 </head>
 <body class="console-page">
   <a class="skip-link" href="#prompt">跳到消息输入</a>
   {% with active_page='playground', logout_id='logout-button', show_user=true %}{% include '_workspace_header.html' %}{% endwith %}
   <main class="workspace">
     <div class="page-heading">
-      <div><p class="eyebrow">工作区 / 测试台</p><h1>反代测试台</h1><p class="page-description">发送消息，检查响应速度、原始数据和多轮对话。</p></div>
+      <div><p class="eyebrow">工作区 / 测试台</p><h1>反代测试台</h1><p class="page-description">测试文本、图文与生图请求，检查响应速度、原始数据和多轮上下文。</p></div>
       <span class="status-pill" id="service-status" data-state="loading" role="status"><span class="status-dot" aria-hidden="true"></span><span id="service-status-text">正在连接本地服务</span></span>
     </div>
     <div class="console-layout">
@@ -32,9 +32,20 @@
         </section>
         <section class="settings-section" aria-labelledby="settings-title">
           <h2 id="settings-title">请求配置</h2>
-          <div class="field"><label for="model">模型</label><input id="model" name="model" value="auto" spellcheck="false" autocomplete="off" maxlength="100" required aria-describedby="model-hint"><p id="model-hint" class="field-hint">auto 已验证；其他模型需单独测试。</p></div>
-          <div class="field"><label for="max-tokens">最大输出 Token</label><input id="max-tokens" type="number" name="max_tokens" value="256" min="1" max="4096" step="1" inputmode="numeric" required aria-describedby="max-tokens-hint"><p id="max-tokens-hint" class="field-hint">范围 1–4096，上游可能不严格遵循。</p></div>
+          <div class="field"><label for="request-mode">测试模式</label><select id="request-mode" aria-describedby="request-mode-hint"><option value="text">文本 / 图文对话</option><option value="image">对话生图</option></select><p id="request-mode-hint" class="field-hint">使用同一个 Chat Completions 接口。</p></div>
+          <div class="field"><label for="model">模型</label><input id="model" name="model" value="auto" spellcheck="false" autocomplete="off" maxlength="100" required aria-describedby="model-hint"><p id="model-hint" class="field-hint">默认 auto；GPTs 可填 g- 开头的 ID。模型可用性以本次请求为准。</p></div>
           <label class="toggle-field" for="stream"><span><span class="field-label">流式响应</span><span class="field-hint">逐段显示模型返回的内容</span></span><input id="stream" type="checkbox" role="switch" checked><span class="toggle-track" aria-hidden="true"></span></label>
+          <p id="image-mode-note" class="mode-note" hidden>生图模式会明确发送 image_gen 调度提示，并选用普通会话；上游可能保留此会话。是否生成图片仍由上游决定。</p>
+          <details id="advanced-options" class="advanced-options">
+            <summary>更多请求选项</summary>
+            <div class="advanced-options-body">
+              <div class="field"><label for="history-mode">上游历史模式</label><select id="history-mode" aria-describedby="history-hint"><option value="default">沿用服务配置</option><option value="true">临时会话</option><option value="false">普通会话 · 可能保留历史</option></select><p id="history-hint" class="field-hint">此选项控制上游历史，不影响页面内的多轮上下文。</p></div>
+              <div class="field"><label for="image-url">图片 URL <span class="optional-label">可选</span></label><input id="image-url" type="url" autocomplete="off" spellcheck="false" maxlength="8192" placeholder="https://…" aria-describedby="image-url-hint"><p id="image-url-hint" class="field-hint">随本条消息上传给上游，供图文分析或图片编辑。仅填写你有权发送的 HTTP(S) 图片地址。</p></div>
+              <div class="field"><label for="system-prompt">系统提示词 <span class="optional-label">可选</span></label><textarea id="system-prompt" rows="3" maxlength="32000" placeholder="设置本次会话的系统指令"></textarea></div>
+              <div class="field"><label for="max-tokens">最大输出 Token</label><input id="max-tokens" type="number" name="max_tokens" value="256" min="1" max="4096" step="1" inputmode="numeric" required aria-describedby="max-tokens-hint"><p id="max-tokens-hint" class="field-hint">范围 1–4096，上游可能不严格遵循。</p></div>
+              <p class="field-hint">temperature / top_p 不会映射到网页上游。已有会话 ID 和固定 Seed 的用法见<a href="/features#api-examples">功能与接口示例</a>。</p>
+            </div>
+          </details>
         </section>
         <div class="sidebar-note"><span class="note-symbol" aria-hidden="true">i</span><p>聊天记录仅保留在当前页面，刷新或退出后会清空。</p></div>
           </div>
@@ -43,7 +54,7 @@
       <section class="chat-panel" aria-labelledby="chat-title">
         <div class="chat-header"><div class="chat-heading"><h2 id="chat-title">对话测试</h2><span id="turn-count" class="subtle-label">新会话</span></div><div class="chat-header-actions"><button id="quick-test" class="button button-secondary" type="button" disabled>运行最小测试</button><button id="clear-button" class="button button-quiet" type="button" disabled>清空</button></div></div>
         <div id="chat-messages" class="chat-messages" aria-label="对话记录" aria-busy="false">
-          <div id="empty-state" class="empty-state"><div class="empty-symbol" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8h10M7 12h6M20 15a3 3 0 0 1-3 3H9l-5 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3z"/></svg></div><h3>从一条消息开始</h3><p>运行最小测试，发送「请只回复 OK。」<br>或输入自己的消息，验证模型与多轮对话。</p><span class="empty-caption">回复与原始响应会显示在这里</span></div>
+          <div id="empty-state" class="empty-state"><div class="empty-symbol" aria-hidden="true"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8h10M7 12h6M20 15a3 3 0 0 1-3 3H9l-5 3V6a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3z"/></svg></div><h3>从一条消息开始</h3><p>运行最小测试，发送「请只回复 OK。」<br>或选择对话生图，输入想生成的画面。</p><span class="empty-caption">回复与原始响应会显示在这里</span></div>
         </div>
         <div id="request-summary" class="request-summary"><span id="request-state" class="request-state" data-state="idle" role="status" aria-live="polite">等待发送</span><span id="request-time">—</span><span id="request-http">HTTP —</span><span id="first-token-time">首字 —</span></div>
         <div class="composer-area">

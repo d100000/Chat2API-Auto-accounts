@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import types
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -12,9 +13,10 @@ from app import app, templates, security_scheme
 from chatgpt.ChatService import ChatService
 from chatgpt.authorization import refresh_all_tokens
 from chatgpt.account_usage import start_trace
+from chatgpt.api_keys import MANAGED_PREFIX, ManagedKeyError, resolve_managed_key
 from chatgpt.scheduling import run_request, failure
 from utils.Logger import logger
-from utils.configs import api_prefix, scheduled_refresh
+from utils.configs import api_prefix, scheduled_refresh, authorization_list
 
 scheduler = AsyncIOScheduler()
 
@@ -135,9 +137,33 @@ async def process(request_data, req_token, lease=None):
         raise error
 
 
+async def pool_key(token, *, record_use=False):
+    try:
+        return await asyncio.to_thread(resolve_managed_key, token, authorization_list, record_use=record_use)
+    except ManagedKeyError as exception:
+        raise HTTPException(exception.status_code, {"error": str(exception), "code": exception.code},
+                            headers={"WWW-Authenticate": "Bearer"} if exception.status_code == 401 else None) from None
+
+
+@app.get(f"/{api_prefix}/v1/models" if api_prefix else "/v1/models")
+async def list_models(credentials: HTTPAuthorizationCredentials = Security(security_scheme)):
+    if not authorization_list:
+        raise HTTPException(503, "尚未配置系统共享密钥。")
+    token = credentials.credentials
+    if token.startswith(MANAGED_PREFIX):
+        await pool_key(token)
+    elif not token.isascii() or not any(hmac.compare_digest(token, key) for key in authorization_list):
+        raise HTTPException(401, "API 密钥无效。", headers={"WWW-Authenticate": "Bearer"})
+    return {"object": "list", "data": [{"id": "auto", "object": "model", "created": 0,
+        "owned_by": "chat2api", "description": "Supported default: account-selected upstream model"}]}
+
+
 @app.post(f"/{api_prefix}/v1/chat/completions" if api_prefix else "/v1/chat/completions")
 async def send_conversation(request: Request, credentials: HTTPAuthorizationCredentials = Security(security_scheme)):
-    req_token = credentials.credentials
+    supplied_token = credentials.credentials
+    # Authenticate reserved-prefix tokens before parsing or forwarding anything.
+    # Legacy direct upstream credentials retain their existing behavior.
+    req_token = await pool_key(supplied_token) if supplied_token.startswith(MANAGED_PREFIX) else supplied_token
     try:
         request_data = await request.json()
     except Exception:
@@ -149,6 +175,10 @@ async def send_conversation(request: Request, credentials: HTTPAuthorizationCred
     if any(not isinstance(message, dict) or message.get("role") not in ("system", "user", "assistant", "tool", "function")
            or not isinstance(message.get("content"), (str, list)) for message in request_data["messages"]):
         raise HTTPException(400, "Each message requires a valid role and string or array content")
+    if supplied_token.startswith(MANAGED_PREFIX):
+        # Count once at the generating service, never at the public gateway.
+        # Re-check active status atomically so concurrent revocation takes effect.
+        req_token = await pool_key(supplied_token, record_use=True)
     chat_service, res = await run_request(process, request_data, req_token)
     try:
         if isinstance(res, types.AsyncGeneratorType):

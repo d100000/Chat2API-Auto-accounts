@@ -11,6 +11,7 @@ import re
 import secrets
 import time
 from typing import Literal
+from urllib.parse import urlsplit
 
 from curl_cffi import CurlOpt
 from curl_cffi.requests import AsyncSession
@@ -23,6 +24,7 @@ from app import app, templates
 from utils import configs, globals
 from chatgpt import account_quota, account_usage, scheduling
 from chatgpt.account_scheduler import get_scheduler
+from scripts.public_service import public_connection_info
 
 ROOT = Path(__file__).resolve().parents[1]
 COOKIE = "chat2api_console"
@@ -88,9 +90,39 @@ class RefreshAccountsBody(BaseModel):
     account_id: str | None = Field(default=None, pattern=r"^acct_[0-9a-f]{24}$")
 
 
+class TextPart(BaseModel):
+    type: Literal["text"]
+    text: str = Field(min_length=1, max_length=32000)
+
+
+class ImageURL(BaseModel):
+    url: str = Field(min_length=1, max_length=1_500_000)
+    detail: Literal["auto", "high", "low"] = "auto"
+
+    @model_validator(mode="after")
+    def validate_image_url(self):
+        if re.fullmatch(r"data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}", self.url):
+            return self
+        parsed = urlsplit(self.url)
+        if parsed.scheme not in {"https", "http"} or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("图片地址需为 HTTP(S) URL 或受支持的图片 data URL。")
+        return self
+
+
+class ImagePart(BaseModel):
+    type: Literal["image_url"]
+    image_url: ImageURL
+
+
 class Message(BaseModel):
     role: Literal["system", "user", "assistant"]
-    content: str = Field(min_length=1, max_length=32000)
+    content: str | list[TextPart | ImagePart] = Field(min_length=1, max_length=32000)
+
+    @model_validator(mode="after")
+    def limit_parts(self):
+        if isinstance(self.content, list) and len(self.content) > 8:
+            raise ValueError("每条消息最多包含 8 段文本或图片。")
+        return self
 
 
 class ChatBody(BaseModel):
@@ -98,11 +130,18 @@ class ChatBody(BaseModel):
     messages: list[Message] = Field(min_length=1, max_length=40)
     stream: bool = True
     max_tokens: int = Field(default=256, ge=1, le=4096)
+    history_disabled: bool | None = None
+    quota_feature: Literal["auto", "reason", "image_gen"] = "auto"
 
     @model_validator(mode="after")
     def limit_context(self):
-        if sum(len(message.content) for message in self.messages) > 64000:
+        text_size = sum(len(message.content) if isinstance(message.content, str) else
+                        sum(len(part.text) for part in message.content if isinstance(part, TextPart))
+                        for message in self.messages)
+        if text_size > 64000:
             raise ValueError("对话内容过长，请清空会话后重试。")
+        if len(json.dumps(self.model_dump(), ensure_ascii=False).encode()) > 2 * 1024 * 1024:
+            raise ValueError("对话内容超过 2 MiB，请减少图片或消息。")
         return self
 
 
@@ -147,7 +186,7 @@ async def console_boundary(request: Request, call_next):
     prefix = f"/{configs.api_prefix}" if configs.api_prefix else ""
     management_path = path[len(prefix):] if prefix and path.startswith(prefix + "/") else path
     management = management_path == "/tokens" or management_path.startswith(("/tokens/", "/seed_tokens/"))
-    console = path in {"/", "/login", "/playground", "/accounts"} or path.startswith("/local-console/")
+    console = path in {"/", "/login", "/playground", "/accounts", "/connection", "/features"} or path.startswith("/local-console/")
     if console or management:
         if request.headers.get("host") not in ALLOWED_HOSTS:
             return JSONResponse({"detail": "请使用本机地址访问。"}, 400)
@@ -172,7 +211,12 @@ app.mount("/static/local-console", StaticFiles(directory=ROOT / "static/local-co
 
 
 @app.get("/", include_in_schema=False)
-async def console_root():
+async def console_root(request: Request):
+    # The inherited web client navigates to /. Keep its entry working when the
+    # optional gateway is enabled, while admin pages retain their own paths.
+    if configs.enable_gateway and (request.cookies.get("token") or request.query_params.get("token")):
+        from gateway.chatgpt import chatgpt_html
+        return await chatgpt_html(request)
     return RedirectResponse("/playground", status_code=303)
 
 
@@ -195,6 +239,34 @@ async def accounts_page(request: Request):
     if not current_session(request):
         return RedirectResponse("/login", status_code=303)
     return templates.TemplateResponse(request=request, name="local_accounts.html", context={})
+
+
+@app.get("/connection", response_class=HTMLResponse, include_in_schema=False)
+async def connection_page(request: Request):
+    if not current_session(request):
+        return RedirectResponse("/login", status_code=303)
+    return templates.TemplateResponse(request=request, name="local_connection.html", context={})
+
+
+@app.get("/local-console/connection", include_in_schema=False)
+async def connection_info(request: Request):
+    require_session(request)
+    prefix = f"/{configs.api_prefix}" if configs.api_prefix else ""
+    base = str(request.base_url).rstrip("/") + prefix + "/v1"
+    keys = configs.authorization_list
+    hint = (keys[0][:8] + "…" + keys[0][-4:]) if keys and len(keys[0]) > 16 else ("已配置" if keys else "未配置")
+    public = await asyncio.to_thread(public_connection_info)
+    return {"base_url": base, "chat_url": base + "/chat/completions", "default_model": "auto",
+            "key_configured": bool(keys), "key_hint": hint, "key_count": len(keys),
+            "access_scope": "loopback", **public}
+
+
+@app.post("/local-console/connection/key", include_in_schema=False)
+async def connection_key(request: Request):
+    require_session(request)
+    if not configs.authorization_list:
+        raise HTTPException(503, "尚未配置系统 API 密钥，请检查 AUTHORIZATION 配置。")
+    return {"api_key": configs.authorization_list[0]}
 
 
 async def with_local_usage(snapshot):
@@ -269,9 +341,10 @@ async def logout(request: Request):
 @app.get("/local-console/session", include_in_schema=False)
 async def session_info(request: Request):
     require_session(request)
+    prefix = f"/{configs.api_prefix}" if configs.api_prefix else ""
     return {"username": USERNAME, "token_count": len(set(globals.token_list)),
             "error_token_count": len(set(globals.error_token_list)),
-            "default_model": "auto", "base_url": str(request.base_url).rstrip("/") + "/v1"}
+            "default_model": "auto", "base_url": str(request.base_url).rstrip("/") + prefix + "/v1"}
 
 
 @app.post("/local-console/chat", include_in_schema=False)
@@ -288,7 +361,7 @@ async def test_chat(body: ChatBody, request: Request):
     handed_to_stream = False
     try:
         response = await client.post(url, headers={"Authorization": f"Bearer {configs.authorization_list[0]}"},
-                                     json=body.model_dump(), stream=True, allow_redirects=False)
+                                     json=body.model_dump(exclude_none=True), stream=True, allow_redirects=False)
         content_type = response.headers.get("content-type", "")
         if response.status_code != 200:
             detail = safe_error(await response.atext())

@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>凭据管理 · Chat2API</title>
-  <link rel="stylesheet" href="/static/local-console/console.css?v=20261021">
-  <link rel="stylesheet" href="/static/local-console/tokens.css?v=20261021">
-  <script src="/static/local-console/ui.js?v=20261021" defer></script>
-  <script src="/static/local-console/tokens.js?v=20261021" defer></script>
+  <link rel="stylesheet" href="/static/local-console/console.css?v=20261021c">
+  <link rel="stylesheet" href="/static/local-console/tokens.css?v=20261021c">
+  <script src="/static/local-console/ui.js?v=20261021c" defer></script>
+  <script src="/static/local-console/tokens.js?v=20261021c" defer></script>
 </head>
 <body class="tokens-page" data-api-prefix="{{ api_prefix or '' }}">
   <a class="skip-link" href="#token-input">跳到凭据输入</a>
@@ -62,6 +62,11 @@
           <p class="field-hint">移除全部已导入凭据和错误记录。账号池将暂时无法接收新请求，需重新导入后恢复。</p>
           <button id="token-clear" class="button button-danger-quiet" type="button">清空全部凭据</button>
         </section>
+        <section class="tokens-danger-zone" aria-labelledby="seed-title">
+          <h2 id="seed-title">Seed 会话映射</h2>
+          <p class="field-hint">清理原项目保存的 Seed 与账号、会话绑定。账号凭据和用量记录会保留；依赖这些绑定的客户端需重新建立会话。</p>
+          <button id="seed-clear" class="button button-danger-quiet" type="button">清空 Seed 映射</button>
+        </section>
       </aside>
     </div>
 
@@ -94,6 +99,19 @@
       <div class="tokens-dialog-actions">
         <button id="clear-cancel" class="button button-secondary" type="button" autofocus>保留凭据</button>
         <button id="clear-confirm" class="button button-danger" type="submit">确认清空</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="seed-dialog" class="tokens-dialog" aria-labelledby="seed-dialog-title" aria-describedby="seed-dialog-description">
+    <form id="seedForm" method="dialog">
+      <div class="tokens-dialog-content">
+        <h2 id="seed-dialog-title">清空 Seed 与会话映射？</h2>
+        <p id="seed-dialog-description">已有 Seed 的账号绑定和会话映射将被删除，无法撤销。已导入的账号凭据会保留。</p>
+        <p id="seed-dialog-error" class="notice notice-error" role="alert" hidden></p>
+      </div>
+      <div class="tokens-dialog-actions">
+        <button id="seed-cancel" class="button button-secondary" type="button" autofocus>保留映射</button>
+        <button id="seed-confirm" class="button button-danger" type="submit">确认清空映射</button>
       </div>
     </form>
   </dialog>

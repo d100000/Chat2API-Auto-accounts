@@ -7,7 +7,7 @@
   const shortDateFormat = new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
   const statusLabels = { fresh: '最新快照', stale: '待刷新', unknown: '尚未查询', expired: '凭据过期', error: '查询失败' };
   const credentialLabels = { valid: '声明有效期内', expired: '已过期', unknown: '有效期未知', error: '凭据异常' };
-  const featureNames = { reason: '大模型 · reason', image_gen: '生图 · image_gen' };
+  const featureNames = { reason: '大模型', image_gen: '生图', deep_research: '深度研究', file_upload: '文件上传', paste_text_to_file: '长文本转文件' };
   const schedulerStateLabels = {
     ready: '可选', available: '可选', active: '执行中', unknown: '额度待确认', stale: '额度待刷新',
     exhausted: '额度已用尽', cooldown: '暂时冷却', reset_pending: '等待重置核验', rechecking: '正在核验',
@@ -39,7 +39,7 @@
     auth_error: '凭据需更新', expired: '凭据过期', unavailable: '暂无可用账号',
     rejoined: '重新加入账号池', interrupted: '恢复中断请求的状态',
   };
-  let state = { snapshot: null, loadedAt: 0, loading: false, quietLoading: false, busy: null, expired: false, filter: 'all', query: '', expanded: new Set(), blockedUntil: 0 };
+  let state = { snapshot: null, loadedAt: 0, loading: false, quietLoading: false, busy: null, expired: false, filter: 'all', query: '', expanded: new Set(), detailTabs: {}, disclosures: new Set(), blockedUntil: 0 };
   let timeUpdaters = [];
   let renderedIds = [];
   let pollTimer = null;
@@ -362,66 +362,144 @@
     return table;
   }
 
-  function accountDetails(account) {
-    const grid = el('div', 'account-detail-grid');
-    const identity = section('账号与快照');
-    identity.append(definition([
-      ['账号', account.label], ['关联凭据', finite(account.token_count) ? `${count(account.token_count)} 份` : null],
-      ['凭据有效期', credentialLabels[account.credential_status] || '未知'], ['声明到期时间', dateText(account.credential_expires_at)],
+  function detailOverview(account) {
+    const grid = el('div', 'account-detail-overview');
+    const identity = section('凭据与快照');
+    const credential = el('p', 'detail-credential');
+    credential.append(el('strong', '', credentialLabels[account.credential_status] || '有效期未知'));
+    credential.append(el('span', '', `${finite(account.token_count) ? count(account.token_count) : '—'} 份关联凭据`));
+    identity.append(credential, definition([
+      ['声明到期', dateText(account.credential_expires_at)],
       ['上次成功查询', dateText(account.checked_at)], ['最近查询尝试', dateText(account.refresh?.last_attempt_at)],
-      ['来源', 'ChatGPT 网页接口'],
-    ]));
-    identity.append(el('p', 'field-hint', '凭据有效期来自凭据声明，不代表已经通过实时认证。'));
+      ['额度来源', 'ChatGPT 网页接口'],
+    ]), el('p', 'field-hint', '有效期来自凭据声明，不代表已通过实时认证。'));
     if (account.refresh?.error) identity.append(el('p', 'detail-error', `${account.refresh.error.message || '查询失败'}${finite(account.refresh.error.http_status) ? `（HTTP ${account.refresh.error.http_status}）` : ''}`));
     const local = section('本地调用统计');
-    local.append(usageTable(account.local_usage), el('p', 'field-hint', '以上为本机滚动统计范围，不是官方配额窗口。'));
-    local.append(definition([
-      ['开始记录', dateText(account.local_usage?.since)], ['最近调用', dateText(account.local_usage?.totals?.last_request_at)],
-      ['累计取消', count(account.local_usage?.totals?.cancelled)], ['累计中断', count(account.local_usage?.totals?.interrupted)],
-      ['处理中', count(account.local_usage?.totals?.in_progress)], ['生图调用', count(account.local_usage?.totals?.image_requests)],
-    ]));
-    const features = section('其他能力额度');
-    const extraFeatures = Object.entries(account.features || {}).filter(([key]) => !['reason', 'image_gen'].includes(key));
-    if (!extraFeatures.length) features.append(el('p', 'field-hint', '上游未返回其他能力额度。'));
-    extraFeatures.forEach(([name, feature]) => { const block = el('div', 'detail-subsection'); block.append(el('p', 'feature-name', featureNames[name] || name), quotaContent(account, feature)); features.append(block); });
-    grid.append(identity, local, features);
-    const scheduling = section('账号调度', 'detail-wide');
-    const schedulerGrid = el('div', 'scheduler-detail-grid');
+    const table = usageTable(account.local_usage);
+    table.setAttribute('aria-label', '该账号的本地调用统计');
+    local.append(table, el('p', 'field-hint', '本机滚动统计，不是官方额度窗口。'));
+    const totals = account.local_usage?.totals;
+    const activity = el('dl', 'detail-activity');
+    [['处理中', totals?.in_progress], ['生图调用', totals?.image_requests], ['累计取消', totals?.cancelled], ['累计中断', totals?.interrupted]].forEach(([label, value]) => {
+      const item = el('div'); item.append(el('dt', '', label), el('dd', '', count(value))); activity.append(item);
+    });
+    local.append(activity);
+    grid.append(identity, local);
+    const footer = el('div', 'detail-overview-footer');
+    footer.append(el('p', '', `开始记录 ${dateText(account.local_usage?.since)}`), el('p', '', `最近调用 ${dateText(totals?.last_request_at)}`));
+    return [grid, footer];
+  }
+
+  function detailScheduling(account) {
+    const grid = el('div', 'scheduler-detail-grid');
     ['reason', 'image_gen'].forEach((feature) => {
       const value = schedulerFeature(account, feature);
-      const block = el('div', 'detail-model-block');
-      block.append(el('p', 'feature-name', featureNames[feature]), schedulerBadge(value));
-      block.append(definition([
+      const block = section(featureNames[feature], 'detail-scheduler');
+      const heading = el('div', 'detail-scheduler-heading');
+      heading.append(el('strong', 'detail-scheduler-value', finite(value?.effective_remaining) ? count(value.effective_remaining) : '未知'), el('span', '', '估算可分配'), schedulerBadge(value));
+      block.append(heading, definition([
         ['可接收新请求', value ? (value.available === true && state.snapshot?.scheduler?.enabled === true ? '是' : '否') : '待确认'],
-        ['调度估算可分配', finite(value?.effective_remaining) ? count(value.effective_remaining) : '未知'],
-        ['已预留', count(value?.reserved)], ['待核对扣减', count(value?.provisional)], ['执行中', count(value?.active)],
-        ['下次复查时间', dateText(value?.retry_at)], ['上游重置时间', dateText(value?.reset_at)],
-        ['当前原因', value?.reason ? schedulerReason(value.reason) : '未提供'],
-      ]));
-      schedulerGrid.append(block);
+        ['已预留 / 待核对扣减', `${count(value?.reserved)} / ${count(value?.provisional)}`], ['执行中', count(value?.active)],
+        ['下次复查', dateText(value?.retry_at)], ['上游重置', dateText(value?.reset_at)],
+      ]), el('p', 'detail-scheduler-reason', value?.reason ? schedulerReason(value.reason) : '调度原因未提供'));
+      grid.append(block);
     });
-    scheduling.append(schedulerGrid, el('p', 'field-hint', `最近选择：${dateText(state.snapshot?.scheduler?.accounts?.[account.id]?.last_selected_at)}。调度估算、预留和待核对扣减用于避免同时分配超额请求，不等于上游实时余额。生图同时检查大模型与生图额度；到达重置时间后仍需后台核验。`));
-    grid.append(scheduling);
-    const restrictions = section('上游模型与窗口限制', 'detail-wide');
-    const restrictionGrid = el('div', 'detail-models');
-    [['模型限制', account.model_limits], ['额度窗口', account.limits_progress], ['额外窗口', account.windows], ['受限能力', account.blocked_features]].forEach(([label, values]) => {
-      const block = el('div', 'detail-model-block'); block.append(el('h4', '', label));
-      block.append(restriction(values ?? [])); restrictionGrid.append(block);
+    const note = el('div', 'detail-context-note');
+    note.append(el('p', '', '调度估算、预留和待核对扣减不等于上游实时余额。生图同时检查大模型与生图额度；重置后仍需后台核验。'), el('p', '', `最近选择 ${dateText(state.snapshot?.scheduler?.accounts?.[account.id]?.last_selected_at)}`));
+    return [grid, note];
+  }
+
+  function hasRestriction(value) {
+    if (Array.isArray(value)) return value.some(hasRestriction);
+    if (value && typeof value === 'object') return Object.entries(value).some(([key, item]) => Object.hasOwn(fieldLabels, key) && hasRestriction(item));
+    return value !== null && value !== undefined && value !== '';
+  }
+
+  function detailQuotas(account) {
+    const features = el('div', 'detail-extra-quotas');
+    const extra = Object.entries(account.features || {}).filter(([key]) => !['reason', 'image_gen'].includes(key));
+    extra.forEach(([name, feature]) => {
+      const block = section(featureNames[name] || name, 'detail-extra-quota');
+      if (featureNames[name]) block.append(el('p', 'detail-feature-code', name));
+      block.append(quotaContent(account, feature)); features.append(block);
     });
-    restrictions.append(restrictionGrid, el('p', 'field-hint', '仅展示接口明确返回的窗口和限制；未返回时不推断 5 小时或每周额度。'));
-    grid.append(restrictions);
-    if (Array.isArray(account.local_usage?.models) && account.local_usage.models.length) {
-      const models = section('本地模型使用', 'detail-wide');
-      const blocks = el('div', 'detail-models');
-      account.local_usage.models.forEach((model) => {
-        const block = el('div', 'detail-model-block');
-        block.append(el('p', 'feature-name', model.requested_model || '未记录模型'));
-        block.append(definition([['请求模型', model.requested_model], ['发送上游模型', model.sent_model], ['上游声明模型', model.upstream_model], ['调用 / 成功 / 失败', `${count(model.attempts)} / ${count(model.succeeded)} / ${count(model.failed)}`], ['生成图片', count(model.generated_images)], ['最近调用', dateText(model.last_request_at)]]));
-        blocks.append(block);
-      });
-      models.append(blocks, el('p', 'field-hint', '上游声明的模型名称不能证明实际底层模型身份。')); grid.append(models);
+    if (!extra.length) features.append(el('p', 'detail-empty', '上游尚未返回其他能力额度。大模型与生图余额见账号列表。'));
+    const raw = el('details', 'detail-diagnostics');
+    const disclosureKey = `limits:${account.id}`;
+    raw.open = state.disclosures.has(disclosureKey);
+    raw.addEventListener('toggle', () => {
+      if (!raw.isConnected) return;
+      const disclosures = raw.open ? new Set([...state.disclosures, disclosureKey]) : new Set([...state.disclosures].filter((key) => key !== disclosureKey));
+      state = { ...state, disclosures };
+    });
+    const summary = el('summary', '', '查看上游窗口与限制'); summary.dataset.focusKey = `limits:${account.id}`;
+    raw.append(summary);
+    const restrictions = el('div', 'detail-restrictions');
+    [['模型限制', account.model_limits], ['额度窗口', account.limits_progress], ['额外窗口', account.windows], ['受限能力', account.blocked_features]].filter(([, values]) => hasRestriction(values)).forEach(([label, values]) => {
+      const block = section(label); block.append(restriction(values)); restrictions.append(block);
+    });
+    if (!restrictions.children.length) restrictions.append(el('p', 'field-hint', '上游未返回可显示的窗口或限制。'));
+    raw.append(restrictions, el('p', 'field-hint', '只显示接口明确返回的字段；未返回时不推断 5 小时或每周额度。'));
+    return [features, raw];
+  }
+
+  function detailModels(account) {
+    const models = account.local_usage?.models;
+    if (!Array.isArray(models) || !models.length) return [el('p', 'detail-empty', '还没有模型调用记录。通过此服务调用后，记录会显示在这里。')];
+    const wrapper = el('div', 'detail-model-table-wrap');
+    const table = el('table', 'detail-table detail-model-table');
+    table.setAttribute('aria-label', '该账号的本地模型调用记录');
+    const head = el('thead'); const heading = el('tr');
+    ['请求模型', '上游声明模型', '调用结果', '生成图片', '最近调用'].forEach((label) => { const cell = el('th', '', label); cell.scope = 'col'; heading.append(cell); });
+    head.append(heading);
+    const body = el('tbody');
+    models.forEach((model) => {
+      const row = el('tr');
+      const requested = el('td');
+      requested.append(el('span', 'feature-name', model.requested_model || '未记录模型'), el('span', 'quota-note', `发送上游：${model.sent_model || '未记录'}`));
+      const upstream = el('td', 'detail-code', model.upstream_model || '未记录');
+      const attempts = el('td'); attempts.append(el('span', '', `${count(model.attempts)} 次`), el('span', 'quota-note', `成功 ${count(model.succeeded)} · 失败 ${count(model.failed)}`));
+      row.append(requested, upstream, attempts, el('td', '', count(model.generated_images)), el('td', '', dateText(model.last_request_at)));
+      body.append(row);
+    });
+    table.append(head, body); wrapper.append(table);
+    return [wrapper, el('p', 'detail-context-note', '记录仅覆盖本地调用；上游声明的模型名称不能证明实际底层模型身份。')];
+  }
+
+  function accountDetails(account, index) {
+    const box = el('div', 'account-detail-shell');
+    const tabs = [['overview', '概览', detailOverview], ['scheduling', '调度', detailScheduling], ['quotas', '更多额度', detailQuotas], ['models', '模型记录', detailModels]];
+    const selected = tabs.some(([key]) => key === state.detailTabs[account.id]) ? state.detailTabs[account.id] : 'overview';
+    const tablist = el('div', 'detail-tabs');
+    tablist.setAttribute('role', 'tablist'); tablist.setAttribute('aria-label', `${account.label || '账号'} 详情`);
+    const panels = el('div', 'detail-panels');
+    function activate(key) {
+      state = { ...state, detailTabs: { ...state.detailTabs, [account.id]: key } };
+      renderRows();
+      [...ui['accounts-rows'].querySelectorAll('[data-focus-key]')].find((button) => button.dataset.focusKey === `tab:${account.id}:${key}`)?.focus({ preventScroll: true });
     }
-    return grid;
+    tabs.forEach(([key, label, content], tabIndex) => {
+      const active = selected === key;
+      const tab = el('button', 'detail-tab', label);
+      const tabId = `detail-tab-${index}-${key}`;
+      const panelId = `detail-panel-${index}-${key}`;
+      tab.id = tabId; tab.type = 'button'; tab.tabIndex = active ? 0 : -1;
+      tab.dataset.focusKey = `tab:${account.id}:${key}`;
+      tab.setAttribute('role', 'tab'); tab.setAttribute('aria-selected', String(active)); tab.setAttribute('aria-controls', panelId);
+      tab.addEventListener('click', () => { activate(key); });
+      tab.addEventListener('keydown', (event) => {
+        const next = event.key === 'ArrowRight' ? (tabIndex + 1) % tabs.length : event.key === 'ArrowLeft' ? (tabIndex - 1 + tabs.length) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : null;
+        if (next === null) return;
+        event.preventDefault(); activate(tabs[next][0]);
+      });
+      const panel = el('div', 'detail-tabpanel'); panel.id = panelId; panel.hidden = !active;
+      panel.setAttribute('role', 'tabpanel'); panel.setAttribute('aria-labelledby', tabId); panel.tabIndex = 0;
+      panel.dataset.focusKey = `panel:${account.id}:${key}`;
+      if (active) panel.append(...content(account));
+      tablist.append(tab); panels.append(panel);
+    });
+    box.append(tablist, panels);
+    return box;
   }
 
   function renderRows(revealedId = null) {
@@ -472,7 +550,7 @@
       const detailRow = el('tr', 'account-detail-row'); detailRow.id = `account-details-${index}`; detailRow.hidden = !isExpanded;
       if (isExpanded) {
         const cell = el('td'); cell.colSpan = 7;
-        const details = accountDetails(account);
+        const details = accountDetails(account, index);
         details.classList.toggle('is-entering', account.id === revealedId);
         cell.append(details); detailRow.append(cell);
       }
