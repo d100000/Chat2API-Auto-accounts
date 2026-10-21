@@ -50,9 +50,10 @@
 .connection-list-empty h3 { color: var(--color-text); font-size: var(--type-base); margin-bottom: var(--space-2); }
 .connection-list-empty p { font-size: var(--type-sm); }
 .connection-keys-table { width: 100%; border-collapse: collapse; text-align: left; font-size: var(--type-sm); }
+#connection-keys-table-wrap { overflow-x: auto; }
 .connection-keys-table th { padding: var(--space-3) var(--space-5); color: var(--color-muted); background: var(--color-subtle); font-size: var(--type-xs); font-weight: 450; }
 .connection-keys-table td { padding: var(--space-4) var(--space-5); border-top: 1px solid var(--color-border); vertical-align: middle; }
-.connection-keys-table th:first-child, .connection-keys-table td:first-child { padding-left: var(--panel-padding); width: 36%; }
+.connection-keys-table th:first-child, .connection-keys-table td:first-child { padding-left: var(--panel-padding); width: 24%; }
 .connection-keys-table th:last-child, .connection-keys-table td:last-child { padding-right: var(--panel-padding); }
 .connection-keys-table tbody tr { transition: background-color var(--motion-fast); }
 .connection-keys-table tbody tr:hover { background: var(--color-subtle); }
@@ -60,12 +61,16 @@
 .connection-key-identity strong { display: block; font-weight: 550; }
 .connection-key-identity > .field-hint { display: block; font-size: var(--type-xs); }
 .connection-masked-key { display: block; margin-block: var(--space-1); color: var(--color-muted); font-size: var(--type-xs); }
+.connection-usage-link { display: inline-flex; align-items: center; min-height: 32px; font-size: var(--type-xs); text-decoration: underline; text-underline-offset: 3px; }
 .connection-key-badge { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); border-radius: var(--radius-sm); border: 1px solid var(--color-border); color: var(--color-muted); white-space: nowrap; font-size: var(--type-xs); }
 .connection-key-badge::before { content: ''; width: 5px; height: 5px; background: currentColor; border-radius: 50%; }
 .connection-key-badge[data-status='active'] { color: var(--color-success); background: var(--color-success-bg); border-color: transparent; }
 .connection-key-badge[data-status='disabled'] { color: var(--color-warning); background: var(--color-warning-bg); border-color: transparent; }
 .connection-key-usage, .connection-key-last-used { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .connection-key-usage { text-align: right; }
+.connection-key-money, .connection-key-images { font-variant-numeric: tabular-nums; }
+.connection-key-money strong, .connection-key-images strong { display: block; font-weight: 550; font-size: var(--type-xs); white-space: nowrap; }
+.connection-key-money .field-hint, .connection-key-images .field-hint { display: block; margin-top: var(--space-1); }
 .connection-keys-table th:nth-child(4) { text-align: right; }
 .connection-key-actions { text-align: right; white-space: nowrap; }
 .connection-key-actions .button { min-height: 32px; padding: var(--space-1) var(--space-3); font-size: var(--type-xs); }
@@ -109,7 +114,7 @@
 .connection-error .button { flex-shrink: 0; }
 .connection-workspace code { font-family: var(--font-mono); overflow-wrap: anywhere; }
 @media (max-width: 1200px) { .connection-layout { grid-template-columns: minmax(0, 1fr); } .connection-create-panel { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); } .connection-create-intro { grid-row: auto; } .connection-create-panel > .field-hint { grid-column: auto; } }
-@media (max-width: 1000px) { .connection-keys-table th, .connection-keys-table td { padding-inline: var(--space-3); } }
+@media (max-width: 1200px) { .connection-keys-table th, .connection-keys-table td { padding-inline: var(--space-3); font-size: var(--type-xs); } }
 @media (max-width: 760px) {
   .connection-section-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
   .connection-section-tabs > button { padding-inline: var(--space-2); font-size: var(--type-xs); }

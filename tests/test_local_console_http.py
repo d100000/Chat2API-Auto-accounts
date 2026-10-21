@@ -82,11 +82,11 @@ class LocalConsoleHTTPTests(unittest.TestCase):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
         (cls.workdir / "templates").mkdir()
-        for filename in ("local_console.html", "local_console_login.html", "local_accounts.html", "tokens.html", "_workspace_header.html", "local_connection.html", "local_features.html", "login.html", "chatgpt.html", "chatgpt_context_1.json", "chatgpt_context_2.json", "gpts_context.json", "initialize.json"):
+        for filename in ("local_console.html", "local_console_login.html", "local_accounts.html", "tokens.html", "_workspace_header.html", "local_connection.html", "local_features.html", "local_dashboard.html", "login.html", "chatgpt.html", "chatgpt_context_1.json", "chatgpt_context_2.json", "gpts_context.json", "initialize.json"):
             shutil.copy2(ROOT / "templates" / filename, cls.workdir / "templates" / filename)
         assets = cls.workdir / "static/local-console"
         assets.mkdir(parents=True)
-        for filename in ("console.css", "console.js", "login.js", "accounts.css", "accounts.js", "ui.js", "playground.css", "tokens.css", "tokens.js", "connection.css", "connection.js", "features.css", "features.js", "theme.js"):
+        for filename in ("console.css", "console.js", "login.js", "accounts.css", "accounts.js", "ui.js", "playground.css", "tokens.css", "tokens.js", "connection.css", "connection.js", "features.css", "features.js", "theme.js", "dashboard.css", "dashboard.js"):
             shutil.copy2(ROOT / "static/local-console" / filename, assets / filename)
         (cls.workdir / ".env").write_text("", encoding="ascii")
         (cls.workdir / "data").mkdir()
@@ -327,6 +327,16 @@ class LocalConsoleHTTPTests(unittest.TestCase):
             if key.startswith("sk-c2a-"):
                 self.assertEqual(self.client.post(self.base + "/v1/chat/completions", headers=headers, json={}).status_code, 401)
         self.assertEqual(self.client.get(self.base + "/v1/models", headers={"Authorization": "Bearer " + self.api_key}).status_code, 200)
+
+    def test_openai_error_has_request_identifier_without_exposing_credentials(self):
+        response = self.client.post(self.base + "/v1/chat/completions",
+            headers={"Authorization": "Bearer " + self.api_key},
+            json={"model": "auto", "messages": [{"role": "developer", "content": "Offline only"},
+                {"role": "user", "content": "Offline only"}], "max_completion_tokens": 8, "stream": False})
+        self.assertEqual(response.status_code, 429)
+        self.assertRegex(response.headers.get("x-request-id", ""), r"^req_[0-9a-f]{32}$")
+        self.assertIn("error", response.json())
+        self.assertNotIn(self.api_key, response.text)
 
     def test_openai_models_and_image_key_lifecycle(self):
         self.log_in()

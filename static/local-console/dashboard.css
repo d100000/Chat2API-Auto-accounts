@@ -1,0 +1,109 @@
+.dashboard-workspace { --dashboard-chart-height: 230px; --dashboard-hour-height: 170px; --dashboard-label-width: 180px; --dashboard-table-min-width: 760px; }
+.dashboard-filters { border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--space-4) var(--space-5); background: var(--color-surface); margin-bottom: var(--space-5); }
+.dashboard-filter-top, .dashboard-filter-fields, .dashboard-custom-dates, .dashboard-data-note, .dashboard-panel-heading, .dashboard-pricing-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.dashboard-filter-top { justify-content: space-between; margin-bottom: var(--space-4); }
+.dashboard-segment { display: inline-flex; padding: var(--space-1); gap: var(--space-1); background: var(--color-subtle); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.dashboard-segment .button { background: transparent; color: var(--color-muted); min-height: 32px; padding: var(--space-1) var(--space-3); font-size: var(--type-xs); }
+.dashboard-segment .button[aria-pressed='true'] { color: var(--color-text); background: var(--color-surface); }
+.dashboard-segment.motion-tabs-ready .button[aria-pressed='true'] { background: transparent; }
+.dashboard-filter-fields { align-items: flex-end; }
+.dashboard-filter-fields .field { margin: 0; flex: 1 1 150px; min-width: 0; }
+.dashboard-filter-fields label, .dashboard-custom-dates label { font-size: var(--type-xs); }
+.dashboard-filter-fields .button { min-height: var(--control-height); }
+.dashboard-custom-dates { margin-bottom: var(--space-4); align-items: flex-end; }
+.dashboard-custom-dates .field { margin: 0; width: 180px; }
+.dashboard-custom-dates > span { padding-bottom: var(--space-2); color: var(--color-muted); }
+.dashboard-data-note { justify-content: space-between; color: var(--color-muted); font-size: var(--type-xs); margin-bottom: var(--space-4); }
+.dashboard-data-note p { max-width: 85ch; }
+.dashboard-loading { padding: var(--space-8); text-align: center; color: var(--color-muted); }
+.dashboard-notice { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+.dashboard-notice .button { flex-shrink: 0; }
+.dashboard-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-4); margin-bottom: var(--space-5); }
+.dashboard-metric { min-width: 0; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); padding: var(--space-5); }
+.dashboard-metric > h2 { color: var(--color-muted); font-size: var(--type-xs); font-weight: 450; }
+.dashboard-metric-value { margin-top: var(--space-3); font-size: var(--type-title); font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.dashboard-metric .field-hint { margin-top: var(--space-3); }
+.dashboard-coverage { display: flex; height: 4px; border-radius: var(--radius-pill); margin-top: var(--space-3); background: var(--color-subtle); overflow: hidden; }
+.dashboard-coverage > span { background: var(--color-accent); }
+.dashboard-charts { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); gap: var(--space-5); margin-bottom: var(--space-5); }
+.dashboard-panel { min-width: 0; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
+.dashboard-panel-heading { justify-content: space-between; padding: var(--space-5) var(--panel-padding); border-bottom: 1px solid var(--color-border); align-items: start; }
+.dashboard-panel-heading h2 { font-size: var(--type-base); }
+.dashboard-panel-heading .field-hint { margin-top: var(--space-1); }
+.dashboard-chart { padding: var(--space-5) var(--panel-padding) 0; min-height: var(--dashboard-chart-height); }
+.dashboard-chart svg { display: block; width: 100%; height: var(--dashboard-chart-height); overflow: visible; }
+.dashboard-hour-chart { min-height: var(--dashboard-hour-height); }
+.dashboard-hour-chart svg { height: var(--dashboard-hour-height); }
+.dashboard-grid-line { stroke: var(--color-border); stroke-width: 1; }
+.dashboard-axis-label { fill: var(--color-muted); font: 11px var(--font-body); }
+.dashboard-bar { fill: var(--color-accent); opacity: .8; }
+.dashboard-bar-target { fill: transparent; }
+.dashboard-chart-point { outline: none; cursor: pointer; }
+.dashboard-chart-point:focus .dashboard-bar, .dashboard-chart-point:hover .dashboard-bar { opacity: 1; }
+.dashboard-chart-point:focus .dashboard-bar-target { fill: var(--color-accent-tint); }
+.dashboard-unknown-mark { stroke: var(--color-muted); stroke-width: 2; stroke-dasharray: 3 2; }
+.dashboard-chart-tooltip { min-height: 38px; padding: var(--space-2) var(--panel-padding); font-size: var(--type-xs); color: var(--color-muted); overflow-wrap: anywhere; }
+.dashboard-chart-empty { min-height: var(--dashboard-hour-height); display: grid; place-items: center; text-align: center; color: var(--color-muted); font-size: var(--type-sm); }
+.dashboard-chart-details { border-top: 1px solid var(--color-border); font-size: var(--type-xs); }
+.dashboard-chart-details > summary { cursor: pointer; padding: var(--space-3) var(--panel-padding); color: var(--color-muted); }
+.dashboard-ranking { padding: var(--space-5) var(--panel-padding); }
+.dashboard-rank-row + .dashboard-rank-row { margin-top: var(--space-4); }
+.dashboard-rank-label { display: flex; justify-content: space-between; gap: var(--space-3); font-size: var(--type-xs); margin-bottom: var(--space-2); }
+.dashboard-rank-label code { overflow-wrap: anywhere; font-family: var(--font-mono); }
+.dashboard-rank-track { height: 6px; background: var(--color-subtle); border-radius: var(--radius-pill); overflow: hidden; }
+.dashboard-rank-fill { height: 100%; background: var(--color-accent); border-radius: inherit; }
+.dashboard-statuses { padding: var(--space-5) var(--panel-padding); }
+.dashboard-status-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-4); padding-block: var(--space-3); font-size: var(--type-sm); border-bottom: 1px solid var(--color-border); }
+.dashboard-status-row:last-child { border: 0; }
+.dashboard-status-label { display: flex; align-items: center; gap: var(--space-2); }
+.dashboard-state { font-size: var(--type-xs); }
+.dashboard-state[data-status='succeeded'] { color: var(--color-success); }
+.dashboard-state[data-status='failed'], .dashboard-state[data-status='interrupted'] { color: var(--color-error); }
+.dashboard-state[data-status='in_progress'] { color: var(--color-warning); }
+.dashboard-table-panel { margin-bottom: var(--space-5); }
+.dashboard-table-scroll { overflow: auto; max-height: 520px; }
+.dashboard-table { width: 100%; min-width: var(--dashboard-table-min-width); border-collapse: collapse; text-align: left; font-size: var(--type-xs); font-variant-numeric: tabular-nums; }
+.dashboard-table th { position: sticky; top: 0; z-index: 1; padding: var(--space-3) var(--space-4); background: var(--color-subtle); color: var(--color-muted); font-weight: 450; white-space: nowrap; }
+.dashboard-table td { padding: var(--space-4); border-top: 1px solid var(--color-border); vertical-align: top; }
+.dashboard-table td:first-child, .dashboard-table th:first-child { padding-left: var(--panel-padding); }
+.dashboard-table td:last-child, .dashboard-table th:last-child { padding-right: var(--panel-padding); }
+.dashboard-table tbody tr:hover { background: var(--color-subtle); }
+.dashboard-table code { font: var(--type-xs)/1.7 var(--font-mono); overflow-wrap: anywhere; }
+.dashboard-cell-sub { display: block; color: var(--color-muted); margin-top: var(--space-1); font-size: var(--type-xs); }
+.dashboard-numeric { white-space: nowrap; }
+.dashboard-key-link { text-decoration: underline; text-underline-offset: 3px; }
+.dashboard-pricing { margin-top: var(--space-6); }
+.dashboard-pricing > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: var(--space-3); padding: var(--space-5) var(--panel-padding); cursor: pointer; font-size: var(--type-sm); font-weight: 550; }
+.dashboard-pricing-body { border-top: 1px solid var(--color-border); padding: var(--panel-padding); }
+.dashboard-pricing-actions { margin-top: var(--space-4); }
+.dashboard-price-row { display: grid; grid-template-columns: minmax(140px, 1.3fr) minmax(100px, .7fr) repeat(4, minmax(100px, 1fr)) auto; gap: var(--space-3); padding-block: var(--space-4); border-bottom: 1px solid var(--color-border); align-items: end; }
+.dashboard-price-row .field { margin: 0; min-width: 0; }
+.dashboard-price-row label { font-size: var(--type-xs); }
+.dashboard-price-row input { font-family: var(--font-mono); font-size: var(--type-xs); }
+.dashboard-price-remove { color: var(--color-error); }
+.dashboard-price-scroll { overflow-x: auto; }
+.dashboard-price-reference { margin-top: var(--space-5); }
+.dashboard-price-reference > summary { font-size: var(--type-xs); color: var(--color-muted); cursor: pointer; padding-block: var(--space-3); }
+@media (max-width: 1200px) { .dashboard-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dashboard-charts { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) {
+  .dashboard-filters { padding: var(--space-4); }
+  .dashboard-filter-top > .dashboard-segment { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); width: 100%; }
+  .dashboard-filter-top .button { padding-inline: var(--space-2); }
+  .dashboard-filter-fields .field { flex-basis: 100%; }
+  .dashboard-filter-fields > .button { flex: 1; }
+  .dashboard-custom-dates { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-3); }
+  .dashboard-custom-dates .field { width: auto; min-width: 0; }
+  .dashboard-custom-dates > span { display: none; }
+  .dashboard-metric { padding: var(--space-4); }
+  .dashboard-metric-value { font-size: var(--type-lg); }
+  .dashboard-metrics { gap: var(--space-3); }
+  .dashboard-panel-heading { padding-block: var(--space-4); }
+  .dashboard-chart { padding-inline: var(--space-4); }
+  .dashboard-pricing > summary { grid-template-columns: minmax(0, 1fr) auto; }
+  .dashboard-pricing > summary > .field-hint { grid-column: 1 / -1; grid-row: 2; }
+  .dashboard-pricing > summary::after { grid-column: 2; grid-row: 1; }
+  .dashboard-price-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-price-row .field:first-child { grid-column: 1 / -1; }
+  .dashboard-pricing-actions .button { flex: 1; }
+  .dashboard-chart-tooltip { min-height: 50px; }
+}

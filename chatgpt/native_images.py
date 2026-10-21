@@ -393,6 +393,8 @@ class NativeImageService:
 async def process_native_images(request_data, req_token, lease=None):
     """Return (service, Images JSON), after exactly one trace/lease/client finish."""
     service = NativeImageService(req_token, lease)
+    if request_data.get("_request_metrics") is not None:
+        request_data["_request_metrics"].attach(service)
     status, code = "failed", "native_image_failed"
     try:
         if not native_images_enabled():

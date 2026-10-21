@@ -18,7 +18,10 @@ jobs:
         with:
           node-version: '22'
       - name: Check browser scripts
-        run: for file in static/local-console/*.js; do node --check "$file"; done
+        run: |
+          for file in static/local-console/*.js; do node --check "$file"; done
+          node tests/test_dashboard_ui.cjs
+          node tests/test_connection_ui.cjs
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'

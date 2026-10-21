@@ -45,6 +45,7 @@ if os.environ.get("LOCAL_CONSOLE_ENABLED", "false").lower() == "true":
     import api.local_console
     import api.key_management
     import api.features_console
+    import api.dashboard
 
 if enable_gateway:
     import gateway.share

@@ -49,7 +49,8 @@
       password.value = '';
       password.type = 'password';
       button.textContent = '登录成功，正在进入…';
-      window.location.assign('/playground');
+      const next = new URLSearchParams(window.location.search).get('next');
+      window.location.assign(next === '/dashboard' ? '/dashboard' : '/playground');
     } catch (cause) {
       error.textContent = cause.name === 'AbortError' ? '本地服务响应超时，请稍后重试。' : cause instanceof TypeError ? '无法连接本地服务，请确认服务正在运行。' : cause.message;
       error.hidden = false;

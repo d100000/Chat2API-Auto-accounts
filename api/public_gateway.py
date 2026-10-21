@@ -280,9 +280,11 @@ def create_app(settings=None, client_factory=AsyncSession, key_store=None):
                         json=data, stream=True, allow_redirects=False)
                 else:
                     response = await client.get(target, headers=headers, stream=True, allow_redirects=False)
+                request_id = response.headers.get("x-request-id", "")
+                trace_headers = {"X-Request-ID": request_id} if re.fullmatch(r"req_[0-9a-f]{32}", request_id) else {}
                 if not 200 <= response.status_code < 300:
                     status = response.status_code if response.status_code in (400, 401, 403, 404, 409, 413, 422, 429, 500, 502, 503, 504) else 502
-                    headers = {}
+                    headers = dict(trace_headers)
                     retry = response.headers.get("retry-after", "")
                     if retry.isascii() and retry.isdigit() and len(retry) < 5 and 1 <= int(retry) <= 3600:
                         headers["Retry-After"] = retry
@@ -305,7 +307,7 @@ def create_app(settings=None, client_factory=AsyncSession, key_store=None):
 
                     stream_ready = True
                     return StreamingResponse(events(), media_type="text/event-stream",
-                        headers={"X-Accel-Buffering": "no"}, background=BackgroundTask(cleanup))
+                        headers={"X-Accel-Buffering": "no", **trace_headers}, background=BackgroundTask(cleanup))
                 if content_type != "application/json":
                     return error(502, "invalid_upstream_response", "The private API did not return JSON.")
                 chunks, size = [], 0
@@ -321,7 +323,7 @@ def create_app(settings=None, client_factory=AsyncSession, key_store=None):
                     return error(502, "invalid_upstream_response", "The private API returned invalid JSON.")
                 if not isinstance(payload, dict):
                     return error(502, "invalid_upstream_response", "The private API returned invalid JSON.")
-                return JSONResponse(payload)
+                return JSONResponse(payload, headers=trace_headers)
             finally:
                 if not stream_ready:
                     await cleanup()

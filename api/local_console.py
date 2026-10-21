@@ -186,7 +186,7 @@ async def console_boundary(request: Request, call_next):
     prefix = f"/{configs.api_prefix}" if configs.api_prefix else ""
     management_path = path[len(prefix):] if prefix and path.startswith(prefix + "/") else path
     management = management_path == "/tokens" or management_path.startswith(("/tokens/", "/seed_tokens/"))
-    console = path in {"/", "/login", "/playground", "/accounts", "/connection", "/features"} or path.startswith("/local-console/")
+    console = path in {"/", "/login", "/playground", "/accounts", "/connection", "/features", "/dashboard"} or path.startswith("/local-console/")
     if console or management:
         if request.headers.get("host") not in ALLOWED_HOSTS:
             return JSONResponse({"detail": "请使用本机地址访问。"}, 400)

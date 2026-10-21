@@ -3,7 +3,7 @@
 
   const byId = (id) => document.getElementById(id);
   const controls = Object.fromEntries(['refresh', 'copy-base', 'copy-public', 'reveal-key', 'copy-key', 'copy-model', 'copy-example', 'retry', 'logout'].map((name) => [name, byId(`connection-${name}`)]));
-  let state = {loading: false, keyPending: false, expired: false, data: null, example: 'cloud', kind: 'chat', imageModel: 'chatgpt-image-latest', revealed: false, retryAction: null, section: 'overview', keys: [], keysLoaded: false, keysLoading: false, keysBusy: false, systemKey: null, revokeTarget: null};
+  let state = {loading: false, keyPending: false, expired: false, data: null, example: 'cloud', kind: 'chat', imageModel: 'chatgpt-image-latest', revealed: false, retryAction: null, section: 'overview', keys: [], keyUsage: {}, usageDays: 30, usageSince: null, usageStatus: 'ok', keysLoaded: false, keysLoading: false, keysBusy: false, systemKey: null, revokeTarget: null};
   let revealTimer;
 
   function hideKey() {
@@ -298,11 +298,23 @@
       identity.append(node('strong', '', key.name));
       identity.append(node('code', 'connection-masked-key', `${key.prefix || 'sk-c2a-'}••••${key.last4 || ''}`));
       identity.append(node('span', 'field-hint', `创建于 ${keyDate(key.created_at)}`));
+      const detail = node('a', 'connection-usage-link', '查看金额与图片用量');
+      detail.href = '/dashboard?api_key_id=' + encodeURIComponent(key.id);
+      detail.setAttribute('aria-label', `查看密钥 ${key.name} 的用量明细`);
+      identity.append(detail);
       const status = node('td'); status.dataset.label = '状态';
       const badge = node('span', 'connection-key-badge', labels[key.status]);
       badge.dataset.status = key.status; status.append(badge);
       const lastUsed = node('td', 'connection-key-last-used', keyDate(key.last_used_at)); lastUsed.dataset.label = '最近调用';
       const usage = node('td', 'connection-key-usage', Number.isFinite(key.request_count) ? key.request_count.toLocaleString('zh-CN') : '—'); usage.dataset.label = '调用次数';
+      const summary = state.usageStatus === 'unavailable' ? null : state.keyUsage[key.id];
+      const money = node('td', 'connection-key-money'); money.dataset.label = '近 ' + state.usageDays + ' 天 API 等价估值';
+      const known = summary?.known_cost_requests > 0 && summary.estimated_cost_usd !== null && Number.isFinite(Number(summary.estimated_cost_usd));
+      money.append(node('strong', '', known ? '$' + Number(summary.estimated_cost_usd).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6}) : '未估值'));
+      money.append(node('span', 'field-hint', state.usageStatus === 'unavailable' ? '用量读取失败，请刷新' : summary ? (summary.unknown_cost_requests || 0).toLocaleString('zh-CN') + ' 次未估值' : '尚无新采集记录'));
+      const images = node('td', 'connection-key-images'); images.dataset.label = '近 ' + state.usageDays + ' 天图片请求 / 生成';
+      images.append(node('strong', '', summary ? (summary.image_requests || 0).toLocaleString('zh-CN') + ' 次 / ' + (summary.generated_images || 0).toLocaleString('zh-CN') + ' 张' : '—'));
+      images.append(node('span', 'field-hint', state.usageStatus === 'unavailable' ? '用量暂不可用' : '请求与生成张数分开统计'));
       const actions = node('td', 'connection-key-actions'); actions.dataset.label = '操作';
       if (key.status !== 'revoked') {
         const toggle = node('button', 'button button-secondary', key.status === 'active' ? '停用' : '启用');
@@ -319,7 +331,7 @@
         });
         actions.append(toggle, revoke);
       } else actions.append(node('span', 'field-hint', '不可恢复'));
-      row.append(identity, status, lastUsed, usage, actions);
+      row.append(identity, status, lastUsed, usage, money, images, actions);
       fragment.append(row);
     }
     byId('connection-key-rows').replaceChildren(fragment);
@@ -329,7 +341,7 @@
     const active = state.keys.filter((key) => key.status === 'active').length;
     const disabled = state.keys.filter((key) => key.status === 'disabled').length;
     const revoked = state.keys.filter((key) => key.status === 'revoked').length;
-    byId('connection-key-summary').textContent = `${active} 个可用 · ${disabled} 个停用 · ${revoked} 个已撤销`;
+    byId('connection-key-summary').textContent = `${active} 个可用 · ${disabled} 个停用 · ${revoked} 个已撤销` + (state.usageStatus === 'unavailable' ? ' · 用量读取失败，密钥管理仍可使用' : state.usageSince ? ' · 用量采集自 ' + keyDate(state.usageSince) : ' · 新用量独立采集，历史调用不回填估值');
     updateKeyControls();
     if (focusKey) {
       const button = Array.from(byId('connection-key-rows').querySelectorAll('button')).find((item) => item.dataset.keyFocus === focusKey);
@@ -346,7 +358,7 @@
     try {
       const data = await request('/local-console/api-keys');
       if (!Array.isArray(data.keys) || !data.keys.every(validKey) || typeof data.system_key?.configured !== 'boolean') throw new Error('Invalid API key metadata');
-      state = {...state, keys: data.keys, keysLoaded: true, systemKey: data.system_key};
+      state = {...state, keys: data.keys, keyUsage: data.usage && typeof data.usage === 'object' ? data.usage : {}, usageDays: data.usage_days || 30, usageSince: data.usage_since || null, usageStatus: data.usage_status === 'unavailable' ? 'unavailable' : 'ok', keysLoaded: true, systemKey: data.system_key};
       byId('connection-create-hint').textContent = data.system_key.configured ? '创建后仅显示一次完整密钥，请保存到应用的环境变量中。' : '请先在 .env 中配置 AUTHORIZATION 系统密钥并重启服务，再创建应用密钥。';
       renderKeys();
     } catch (_) {

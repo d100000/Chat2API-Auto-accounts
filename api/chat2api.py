@@ -19,6 +19,7 @@ from chatgpt.account_usage import start_trace
 from chatgpt.api_keys import MANAGED_PREFIX, ManagedKeyError, resolve_managed_key
 from chatgpt.scheduling import run_request, failure
 from chatgpt.image_api import validate_image_request, web_image_request, format_web_images, IMAGE_MODELS
+from chatgpt.request_metrics import start_request, measured_stream
 from utils.Logger import logger
 from utils.disconnect import ClientDisconnected, run_connected
 from utils.configs import api_prefix, scheduled_refresh, authorization_list
@@ -32,6 +33,9 @@ async def api_error(request, exception):
     if not request.url.path.startswith(prefix + "/v1/"):
         return await http_exception_handler(request, exception)
     detail = exception.detail
+    if exception.status_code == 403 and detail in ("Not authenticated", "Invalid authentication credentials"):
+        return JSONResponse({"error": {"message": "A valid API key is required.", "type": "authentication_error",
+            "param": None, "code": "invalid_api_key"}}, 401, headers={"WWW-Authenticate": "Bearer"})
     if isinstance(detail, dict) and isinstance(detail.get("error"), dict):
         payload = detail
     else:
@@ -39,7 +43,10 @@ async def api_error(request, exception):
         payload = {"error": {"message": message if isinstance(message, str) else "Request failed.",
             "type": "authentication_error" if exception.status_code in (401, 403) else "invalid_request_error" if exception.status_code < 500 else "server_error",
             "param": None, "code": detail.get("code", "request_failed") if isinstance(detail, dict) else "request_failed"}}
-    return JSONResponse(payload, exception.status_code, headers=exception.headers)
+    headers = dict(exception.headers or {})
+    if getattr(request.state, "analytics_request_id", None):
+        headers["X-Request-ID"] = request.state.analytics_request_id
+    return JSONResponse(payload, exception.status_code, headers=headers)
 
 
 @app.on_event("startup")
@@ -53,6 +60,9 @@ async def app_start():
 
 async def to_send_conversation(request_data, req_token, lease=None):
     chat_service = ChatService(req_token, selected_token=lease.token) if lease else ChatService(req_token)
+    metrics = request_data.get("_request_metrics")
+    if metrics is not None:
+        metrics.attach(chat_service)
     chat_service.schedule_lease = lease
     # req_token may be the shared local key; only the service knows which
     # imported account this attempt will actually use.
@@ -244,6 +254,9 @@ async def generate_images(request: Request, credentials: HTTPAuthorizationCreden
     if data["model"] == "gpt-image-2" and not native_images_enabled():
         raise image_error(403, "unsupported_credentials", "原生 Image2 尚未启用，需要 Codex 授权；当前请使用 chatgpt-image-latest 网页生图通道。")
     token = await api_key_only(supplied, record_use=True)
+    metrics = await start_request(supplied, data, "image")
+    request.state.analytics_request_id = metrics.id
+    data = {**data, "_request_metrics": metrics}
     handler = process_native_images if data["model"] == "gpt-image-2" else process_web_images
     try:
         if data["model"] == "gpt-image-2":
@@ -253,8 +266,20 @@ async def generate_images(request: Request, credentials: HTTPAuthorizationCreden
         else:
             service, result = await run_connected(request, run_request(handler, {**data, "quota_feature": "image_gen"}, token))
     except ClientDisconnected:
+        await metrics.finish("cancelled", 499, "client_disconnected")
         return Response(status_code=499)
-    return JSONResponse(result)
+    except asyncio.CancelledError:
+        await metrics.finish("cancelled", 499, "client_cancelled")
+        raise
+    except HTTPException as exception:
+        await metrics.finish("failed", exception.status_code, f"http_{exception.status_code}")
+        raise
+    except Exception:
+        await metrics.finish("failed", 500, "request_failed")
+        raise
+    metrics.observe_result(result)
+    await metrics.finish("succeeded", 200)
+    return JSONResponse(result, headers={"X-Request-ID": metrics.id} if metrics.id else {})
 
 
 @app.post(f"/{api_prefix}/v1/chat/completions" if api_prefix else "/v1/chat/completions")
@@ -271,32 +296,86 @@ async def send_conversation(request: Request, credentials: HTTPAuthorizationCred
         raise HTTPException(400, "messages must be a non-empty array")
     if "model" in request_data and not isinstance(request_data["model"], str):
         raise HTTPException(400, "model must be a string")
-    if any(not isinstance(message, dict) or message.get("role") not in ("system", "user", "assistant", "tool", "function")
+    if any(not isinstance(message, dict) or message.get("role") not in ("system", "developer", "user", "assistant", "tool", "function")
            or not isinstance(message.get("content"), (str, list)) for message in request_data["messages"]):
         raise HTTPException(400, "Each message requires a valid role and string or array content")
+    request_data = validate_chat_options(request_data)
+    request_data = {**request_data, "messages": [
+        {**message, "role": "system"} if message["role"] == "developer" else message for message in request_data["messages"]]}
     request_data = await validate_chat_model(request_data)
     if supplied_token.startswith(MANAGED_PREFIX):
         # Count once at the generating service, never at the public gateway.
         # Re-check active status atomically so concurrent revocation takes effect.
         req_token = await pool_key(supplied_token, record_use=True)
-    chat_service, res = await run_request(process, request_data, req_token)
+    metrics = await start_request(supplied_token, request_data, "chat")
+    request.state.analytics_request_id = metrics.id
+    request_data = {**request_data, "_request_metrics": metrics}
+    try:
+        chat_service, res = await run_request(process, request_data, req_token)
+    except asyncio.CancelledError:
+        await metrics.finish("cancelled", 499, "client_cancelled")
+        raise
+    except HTTPException as exception:
+        await metrics.finish("failed", exception.status_code, f"http_{exception.status_code}")
+        raise
+    except Exception:
+        await metrics.finish("failed", 500, "request_failed")
+        raise
     try:
         if isinstance(res, types.AsyncGeneratorType):
-            background = BackgroundTask(finish_attempt, chat_service, "interrupted", "response_not_consumed")
-            return StreamingResponse(res, media_type="text/event-stream", background=background)
+            async def unconsumed():
+                await finish_attempt(chat_service, "interrupted", "response_not_consumed")
+                await metrics.finish("interrupted", 502, "response_not_consumed")
+            background = BackgroundTask(unconsumed)
+            stream = measured_stream(metrics, chat_service, res,
+                include_usage=request_data.get("stream_options", {}).get("include_usage", False))
+            return StreamingResponse(stream, media_type="text/event-stream", background=background,
+                headers={"X-Request-ID": metrics.id} if metrics.id else {})
         else:
+            metrics.observe_result(res)
+            await metrics.finish("succeeded", 200)
             background = BackgroundTask(chat_service.close_client)
-            return JSONResponse(res, media_type="application/json", background=background)
+            return JSONResponse(res, media_type="application/json", background=background,
+                headers={"X-Request-ID": metrics.id} if metrics.id else {})
     except HTTPException as e:
+        await metrics.finish("failed", e.status_code, "response_failed")
         await chat_service.close_client()
         if e.status_code == 500:
             logger.error(f"Server error, {str(e)}")
             raise HTTPException(status_code=500, detail="Server error")
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     except Exception as e:
+        await metrics.finish("failed", 500, "response_failed")
         await chat_service.close_client()
         logger.error(f"Server error, {str(e)}")
         raise HTTPException(status_code=500, detail="Server error")
+
+
+def validate_chat_options(data):
+    """OpenAI-compatible usage/length options that this bridge can honor."""
+    if type(data.get("stream", False)) is not bool:
+        raise HTTPException(400, "stream must be a boolean")
+    options = data.get("stream_options", {})
+    if not isinstance(options, dict) or set(options) - {"include_usage"} or type(options.get("include_usage", False)) is not bool:
+        raise HTTPException(400, "stream_options must contain boolean include_usage only")
+    if options and not data.get("stream", False):
+        raise HTTPException(400, "stream_options requires stream=true")
+    if "max_tokens" in data and "max_completion_tokens" in data:
+        raise HTTPException(400, "Specify either max_tokens or max_completion_tokens")
+    maximum = data.get("max_completion_tokens", data.get("max_tokens"))
+    if maximum is not None and (type(maximum) is not int or not 1 <= maximum <= 1000000):
+        raise HTTPException(400, "Token limit must be an integer from 1 to 1000000")
+    # Do not silently claim multi-choice generation when only one is produced.
+    if "n" in data and (type(data["n"]) is not int or data["n"] != 1):
+        raise HTTPException(400, "This account-backed API supports n=1")
+    for field in ("tools", "tool_choice", "functions", "function_call", "parallel_tool_calls"):
+        if data.get(field):
+            raise HTTPException(400, {"error": {"message": f"{field} is not supported by the ChatGPT web bridge.",
+                "type": "invalid_request_error", "param": field, "code": "unsupported_parameter"}})
+    if data.get("response_format") not in (None, {"type": "text"}):
+        raise HTTPException(400, {"error": {"message": "Structured response_format is not supported by this bridge.",
+            "type": "invalid_request_error", "param": "response_format", "code": "unsupported_parameter"}})
+    return {**data, **({"max_tokens": maximum} if maximum is not None else {})}
 
 
 @app.get(f"/{api_prefix}/tokens" if api_prefix else "/tokens", response_class=HTMLResponse)

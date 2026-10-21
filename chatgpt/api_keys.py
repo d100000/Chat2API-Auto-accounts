@@ -118,6 +118,19 @@ class APIKeyStore:
         except sqlite3.Error:
             raise KeyStoreError("读取 API 密钥失败，请稍后重试。") from None
 
+    def usage_identifier(self, plaintext):
+        """Opaque identity for an already authenticated request, even if revoked
+        concurrently. This never authenticates or re-enables a credential.
+        """
+        if not self._exists():
+            return None
+        try:
+            with closing(self._connect()) as connection:
+                row = connection.execute("SELECT id FROM api_keys WHERE key_hash=?", (key_digest(plaintext),)).fetchone()
+                return row["id"] if row else None
+        except sqlite3.Error:
+            raise KeyStoreError("读取 API 密钥归属失败。") from None
+
     def create(self, name):
         name = valid_name(name)
         self._prepare()
@@ -199,3 +212,15 @@ def resolve_managed_key(token, system_keys, *, store=None, record_use=False):
     if row is None:
         raise ManagedKeyError(401, "invalid_api_key", "API 密钥无效、已停用或已撤销。")
     return keys[0]
+
+
+def usage_key_id(token, system_keys, *, store=None):
+    """Never store the bearer secret, prefix, or account credential in analytics."""
+    if isinstance(token, str) and token.isascii() and any(hmac.compare_digest(token, key) for key in system_keys):
+        return "system_" + key_digest(token)[:24]
+    if isinstance(token, str) and token.startswith(MANAGED_PREFIX):
+        identifier = (store or APIKeyStore()).usage_identifier(token)
+        if identifier is None:
+            raise KeyStoreError("无法确认已经受理请求的 API 密钥归属。")
+        return identifier
+    return "direct"

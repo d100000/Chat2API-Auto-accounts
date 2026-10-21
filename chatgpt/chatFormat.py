@@ -19,11 +19,14 @@ moderation_message = "I'm sorry, I cannot provide or engage in any content relat
 
 
 async def format_not_stream_response(response, prompt_tokens, max_tokens, model):
+    import tiktoken
+
     chat_id = f"chatcmpl-{''.join(random.choice(string.ascii_letters + string.digits) for _ in range(29))}"
     system_fingerprint_list = model_system_fingerprint.get(model, None)
     system_fingerprint = random.choice(system_fingerprint_list) if system_fingerprint_list else None
     created_time = int(time.time())
     all_text = ""
+    stream_finish_reason = None
     async for chunk in response:
         try:
             if chunk.startswith("data: [DONE]"):
@@ -34,14 +37,32 @@ async def format_not_stream_response(response, prompt_tokens, max_tokens, model)
                 chunk = json.loads(chunk[6:])
                 if chunk.get("error"):
                     raise HTTPException(502, "Upstream stream reported an error.")
-                if not chunk["choices"][0].get("delta"):
+                choices = chunk.get("choices")
+                if choices == [] and isinstance(chunk.get("usage"), dict):
                     continue
-                all_text += chunk["choices"][0]["delta"]["content"]
+                choice = choices[0]
+                if choice.get("finish_reason") in ("length", "stop", "content_filter", "tool_calls", "function_call"):
+                    stream_finish_reason = choice["finish_reason"]
+                if not choice.get("delta"):
+                    continue
+                content = choice["delta"].get("content")
+                if content is not None:
+                    if not isinstance(content, str):
+                        raise ValueError("Invalid content")
+                    all_text += content
         except HTTPException:
             raise
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, IndexError):
             raise HTTPException(502, "Unable to parse upstream response.")
-    content, completion_tokens, finish_reason = await split_tokens_from_content(all_text, max_tokens, model)
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        encoding = tiktoken.get_encoding("cl100k_base")
+    encoded = encoding.encode(all_text, disallowed_special=())
+    truncated = len(encoded) > max_tokens
+    content = encoding.decode_bytes(encoded[:max_tokens]).decode("utf-8", errors="ignore") if truncated else all_text
+    completion_tokens = len(encoding.encode(content, disallowed_special=()))
+    finish_reason = "length" if truncated or stream_finish_reason == "length" else stream_finish_reason or "stop"
     message = {
         "role": "assistant",
         "content": content,
@@ -134,11 +155,42 @@ async def head_process_response(response):
 
 
 async def stream_response(service, response, model, max_tokens):
+    import tiktoken
+
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+    except KeyError:
+        encoding = tiktoken.get_encoding("cl100k_base")
     chat_id = f"chatcmpl-{''.join(random.choice(string.ascii_letters + string.digits) for _ in range(29))}"
     system_fingerprint_list = model_system_fingerprint.get(model, None)
     system_fingerprint = random.choice(system_fingerprint_list) if system_fingerprint_list else None
     created_time = int(time.time())
-    completion_tokens = 0
+    accumulated_text = ""
+    emitted_text = ""
+
+    def bounded_delta(delta, finish_reason, *, final=False):
+        nonlocal accumulated_text, emitted_text
+        text = delta.get("content", "")
+        if not isinstance(text, str):
+            raise ValueError("Invalid content")
+        accumulated_text += text
+        if final:
+            tokens = encoding.encode(accumulated_text, disallowed_special=())
+        else:
+            # The last word can merge into different tokens as bytes arrive.
+            # Hold that unstable suffix so packet boundaries never change the
+            # visible prefix selected by max_tokens. This counts visible text
+            # only; it does not pretend to know upstream reasoning/billing.
+            tokens, _ = encoding.encode_with_unstable(accumulated_text, disallowed_special=())
+        limited = len(tokens) > max_tokens
+        prefix = encoding.decode_bytes(tokens[:max_tokens]).decode("utf-8", errors="ignore")
+        if not prefix.startswith(emitted_text):
+            raise ValueError("Unstable output prefix")
+        content = prefix[len(emitted_text):]
+        emitted_text = prefix
+        if "content" in delta or content:
+            delta = {**delta, "content": content}
+        return delta, "length" if limited else finish_reason, limited
     len_last_content = 0
     len_last_citation = 0
     last_message_id = None
@@ -284,11 +336,6 @@ async def stream_response(service, response, model, max_tokens):
 
                     delta = {"content": new_text}
                     last_content_type = outer_content_type
-                    if completion_tokens >= max_tokens:
-                        delta = {}
-                        finish_reason = "length"
-                        end = True
-
                 elif status == "finished_successfully":
                     if content.get("content_type") == "multimodal_text":
                         parts = content.get("parts", [])
@@ -342,6 +389,9 @@ async def stream_response(service, response, model, max_tokens):
                 last_message_id = message_id
                 last_role = role
                 last_status = status
+                delta, finish_reason, limited = bounded_delta(delta, finish_reason, final=end)
+                if limited:
+                    end = True
                 if not end and not delta.get("content"):
                     delta = {"role": "assistant", "content": ""}
                 chunk_new_data["choices"][0]["delta"] = delta
@@ -351,12 +401,19 @@ async def stream_response(service, response, model, max_tokens):
                         "message_id": message_id,
                         "conversation_id": conversation_id,
                     })
-                completion_tokens += 1
                 outgoing = f"data: {json.dumps(chunk_new_data)}\n\n"
                 if getattr(service, "usage_trace", None):
                     service.usage_trace.observe_output(outgoing)
                 yield outgoing
             elif chunk.startswith("data: [DONE]"):
+                delta, finish_reason, limited = bounded_delta({}, None, final=True)
+                if delta.get("content") or limited:
+                    chunk_new_data["choices"][0]["delta"] = delta
+                    chunk_new_data["choices"][0]["finish_reason"] = finish_reason
+                    outgoing = f"data: {json.dumps(chunk_new_data)}\n\n"
+                    if getattr(service, "usage_trace", None):
+                        service.usage_trace.observe_output(outgoing)
+                    yield outgoing
                 logger.info(f"Response Model: {model_slug}")
                 yield "data: [DONE]\n\n"
             else:

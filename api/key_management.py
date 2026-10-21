@@ -1,6 +1,7 @@
 """Local, authenticated lifecycle management for client API keys."""
 
 import asyncio
+import logging
 from typing import Literal
 
 from fastapi import HTTPException, Request
@@ -13,6 +14,7 @@ from utils import configs
 
 
 STORE = APIKeyStore()
+LOG = logging.getLogger(__name__)
 
 
 class CreateKeyBody(BaseModel):
@@ -44,7 +46,17 @@ async def store_call(function, *args):
 @app.get("/local-console/api-keys", include_in_schema=False)
 async def list_api_keys(request: Request):
     require_session(request)
-    return {"keys": await store_call(STORE.list_keys), "system_key": system_key_info(configs.authorization_list)}
+    def read_usage():
+        from chatgpt.analytics import get_store
+        snapshot = get_store().snapshot(days=30)
+        return {"usage": {row["key_id"]: row for row in snapshot["keys"]},
+                "usage_days": 30, "usage_since": snapshot["since"], "usage_status": "ok"}
+    try:
+        usage = await asyncio.to_thread(read_usage)
+    except Exception:
+        LOG.error("API key analytics could not be read; key management remains available.")
+        usage = {"usage": {}, "usage_days": 30, "usage_since": None, "usage_status": "unavailable"}
+    return {"keys": await store_call(STORE.list_keys), "system_key": system_key_info(configs.authorization_list), **usage}
 
 
 @app.post("/local-console/api-keys", include_in_schema=False)
