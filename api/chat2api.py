@@ -1,12 +1,15 @@
 import asyncio
 import hmac
+import re
 import types
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Request, HTTPException, Form, Security
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from starlette.background import BackgroundTask
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.exception_handlers import http_exception_handler
 
 import utils.globals as globals
 from app import app, templates, security_scheme
@@ -15,10 +18,28 @@ from chatgpt.authorization import refresh_all_tokens
 from chatgpt.account_usage import start_trace
 from chatgpt.api_keys import MANAGED_PREFIX, ManagedKeyError, resolve_managed_key
 from chatgpt.scheduling import run_request, failure
+from chatgpt.image_api import validate_image_request, web_image_request, format_web_images, IMAGE_MODELS
 from utils.Logger import logger
+from utils.disconnect import ClientDisconnected, run_connected
 from utils.configs import api_prefix, scheduled_refresh, authorization_list
 
 scheduler = AsyncIOScheduler()
+
+
+@app.exception_handler(StarletteHTTPException)
+async def api_error(request, exception):
+    prefix = f"/{api_prefix}" if api_prefix else ""
+    if not request.url.path.startswith(prefix + "/v1/"):
+        return await http_exception_handler(request, exception)
+    detail = exception.detail
+    if isinstance(detail, dict) and isinstance(detail.get("error"), dict):
+        payload = detail
+    else:
+        message = detail.get("message") or detail.get("error") if isinstance(detail, dict) else detail
+        payload = {"error": {"message": message if isinstance(message, str) else "Request failed.",
+            "type": "authentication_error" if exception.status_code in (401, 403) else "invalid_request_error" if exception.status_code < 500 else "server_error",
+            "param": None, "code": detail.get("code", "request_failed") if isinstance(detail, dict) else "request_failed"}}
+    return JSONResponse(payload, exception.status_code, headers=exception.headers)
 
 
 @app.on_event("startup")
@@ -51,7 +72,9 @@ async def to_send_conversation(request_data, req_token, lease=None):
         raise
     except HTTPException as e:
         failure(chat_service, e)
-        await finish_attempt(chat_service, "failed", f"http_{e.status_code}")
+        safe_detail = e.detail.get("error", {}) if isinstance(e.detail, dict) else {}
+        code = safe_detail.get("code") if isinstance(safe_detail, dict) else None
+        await finish_attempt(chat_service, "failed", code or f"http_{e.status_code}")
         raise
     except Exception:
         error = failure(chat_service, HTTPException(500, "Server error"))
@@ -110,7 +133,7 @@ async def tracked_stream(service, response):
         await asyncio.shield(finish_attempt(service, outcome, error_code))
 
 
-async def process(request_data, req_token, lease=None):
+async def process(request_data, req_token, lease=None, *, transformer=None):
     chat_service = await to_send_conversation(request_data, req_token, lease)
     try:
         await chat_service.prepare_send_conversation()
@@ -122,6 +145,8 @@ async def process(request_data, req_token, lease=None):
         if chat_service.usage_trace and not chat_service.usage_trace.complete:
             await finish_attempt(chat_service, "interrupted", "incomplete_stream")
             raise HTTPException(502, "Upstream response did not complete.")
+        if transformer is not None:
+            res = await transformer(chat_service, res, request_data)
         await finish_attempt(chat_service, "succeeded")
         return chat_service, res
     except asyncio.CancelledError:
@@ -129,7 +154,9 @@ async def process(request_data, req_token, lease=None):
         raise
     except HTTPException as e:
         failure(chat_service, e)
-        await finish_attempt(chat_service, "failed", f"http_{e.status_code}")
+        safe_detail = e.detail.get("error", {}) if isinstance(e.detail, dict) else {}
+        code = safe_detail.get("code") if isinstance(safe_detail, dict) else None
+        await finish_attempt(chat_service, "failed", code or f"http_{e.status_code}")
         raise
     except Exception:
         error = failure(chat_service, HTTPException(500, "Server error"))
@@ -147,15 +174,87 @@ async def pool_key(token, *, record_use=False):
 
 @app.get(f"/{api_prefix}/v1/models" if api_prefix else "/v1/models")
 async def list_models(credentials: HTTPAuthorizationCredentials = Security(security_scheme)):
+    await api_key_only(credentials.credentials)
+    from chatgpt.model_catalog import get_catalog
+    return await get_catalog()
+
+
+async def api_key_only(token, *, record_use=False):
     if not authorization_list:
         raise HTTPException(503, "尚未配置系统共享密钥。")
-    token = credentials.credentials
     if token.startswith(MANAGED_PREFIX):
-        await pool_key(token)
+        return await pool_key(token, record_use=record_use)
     elif not token.isascii() or not any(hmac.compare_digest(token, key) for key in authorization_list):
         raise HTTPException(401, "API 密钥无效。", headers={"WWW-Authenticate": "Bearer"})
-    return {"object": "list", "data": [{"id": "auto", "object": "model", "created": 0,
-        "owned_by": "chat2api", "description": "Supported default: account-selected upstream model"}]}
+    return token
+
+
+@app.get(f"/{api_prefix}/v1/models/{{model_id}}" if api_prefix else "/v1/models/{model_id}")
+async def retrieve_model(model_id: str, credentials: HTTPAuthorizationCredentials = Security(security_scheme)):
+    await api_key_only(credentials.credentials)
+    from chatgpt.model_catalog import get_catalog
+    catalog = await get_catalog()
+    model = next((row for row in catalog["data"] if row["id"] == model_id), None)
+    if model is None:
+        raise HTTPException(404, {"error": {"message": "Model is not in this account pool's catalog.",
+            "type": "invalid_request_error", "param": "model", "code": "model_not_found"}})
+    return model
+
+
+async def validate_chat_model(data):
+    model = data.get("model", "auto")
+    if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", model):
+        raise HTTPException(400, "model must be a model identifier of at most 100 characters")
+    if model in IMAGE_MODELS or "image" in model or model.startswith("dall-e"):
+        raise HTTPException(400, {"error": {"message": "Use /v1/images/generations for image models.",
+            "type": "invalid_request_error", "param": "model", "code": "model_endpoint_mismatch"}})
+    from api.models import model_proxy
+    from chatgpt.model_catalog import get_catalog
+    # Retain inherited aliases and custom GPTs; current GPT slugs must come from
+    # model discovery, and unknown labels must never become GPT-4o silently.
+    legacy = {"gpt-4", "gpt-4-mobile", "gpt-4o-canmore", "o3", "o1", "o1-pro", "o3-mini-high", "o3-mini-medium", "o3-mini-low"} | {
+        value for key, value in model_proxy.items() if key.startswith(("gpt-", "o1", "o3"))} | {
+        key for key in model_proxy if key.startswith(("gpt-", "o1", "o3"))}
+    if model not in legacy and not model.startswith(("g-", "gizmo")):
+        catalog = await get_catalog()
+        if not any(row["id"] == model and row.get("type") == "chat" for row in catalog["data"]):
+            raise HTTPException(404, {"error": {"message": "Unknown model. Query /v1/models for available identifiers.",
+                "type": "invalid_request_error", "param": "model", "code": "model_not_found"}})
+    return {**data, "model": model}
+
+
+async def process_web_images(data, token, lease=None):
+    return await process(web_image_request(data), token, lease, transformer=format_web_images)
+
+
+@app.post(f"/{api_prefix}/v1/images/generations" if api_prefix else "/v1/images/generations")
+async def generate_images(request: Request, credentials: HTTPAuthorizationCredentials = Security(security_scheme)):
+    supplied = credentials.credentials
+    token = await api_key_only(supplied)
+    try:
+        raw = await request.body()
+        if len(raw) > 2 * 1024 * 1024:
+            raise HTTPException(413, "Request body exceeds 2 MiB.")
+        data = validate_image_request(await request.json())
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(400, "Invalid JSON body.") from None
+    from chatgpt.native_images import process_native_images, native_images_enabled, image_error
+    if data["model"] == "gpt-image-2" and not native_images_enabled():
+        raise image_error(403, "unsupported_credentials", "原生 Image2 尚未启用，需要 Codex 授权；当前请使用 chatgpt-image-latest 网页生图通道。")
+    token = await api_key_only(supplied, record_use=True)
+    handler = process_native_images if data["model"] == "gpt-image-2" else process_web_images
+    try:
+        if data["model"] == "gpt-image-2":
+            # Codex quotas are separate from ChatGPT web balances. Never reserve
+            # or debit web quota for an explicitly enabled native Codex request.
+            service, result = await run_connected(request, handler(data, token))
+        else:
+            service, result = await run_connected(request, run_request(handler, {**data, "quota_feature": "image_gen"}, token))
+    except ClientDisconnected:
+        return Response(status_code=499)
+    return JSONResponse(result)
 
 
 @app.post(f"/{api_prefix}/v1/chat/completions" if api_prefix else "/v1/chat/completions")
@@ -175,6 +274,7 @@ async def send_conversation(request: Request, credentials: HTTPAuthorizationCred
     if any(not isinstance(message, dict) or message.get("role") not in ("system", "user", "assistant", "tool", "function")
            or not isinstance(message.get("content"), (str, list)) for message in request_data["messages"]):
         raise HTTPException(400, "Each message requires a valid role and string or array content")
+    request_data = await validate_chat_model(request_data)
     if supplied_token.startswith(MANAGED_PREFIX):
         # Count once at the generating service, never at the public gateway.
         # Re-check active status atomically so concurrent revocation takes effect.

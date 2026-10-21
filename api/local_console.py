@@ -22,7 +22,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app import app, templates
 from utils import configs, globals
-from chatgpt import account_quota, account_usage, scheduling
+from chatgpt import account_quota, account_usage, model_catalog, scheduling
 from chatgpt.account_scheduler import get_scheduler
 from scripts.public_service import public_connection_info
 
@@ -257,6 +257,8 @@ async def connection_info(request: Request):
     hint = (keys[0][:8] + "…" + keys[0][-4:]) if keys and len(keys[0]) > 16 else ("已配置" if keys else "未配置")
     public = await asyncio.to_thread(public_connection_info)
     return {"base_url": base, "chat_url": base + "/chat/completions", "default_model": "auto",
+            "models_url": base + "/models", "images_url": base + "/images/generations",
+            "default_image_model": "chatgpt-image-latest", "model_catalog": await model_catalog.get_catalog(),
             "key_configured": bool(keys), "key_hint": hint, "key_count": len(keys),
             "access_scope": "loopback", **public}
 

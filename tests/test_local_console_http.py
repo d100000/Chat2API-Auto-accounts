@@ -328,6 +328,42 @@ class LocalConsoleHTTPTests(unittest.TestCase):
                 self.assertEqual(self.client.post(self.base + "/v1/chat/completions", headers=headers, json={}).status_code, 401)
         self.assertEqual(self.client.get(self.base + "/v1/models", headers={"Authorization": "Bearer " + self.api_key}).status_code, 200)
 
+    def test_openai_models_and_image_key_lifecycle(self):
+        self.log_in()
+        endpoint = self.base + "/local-console/api-keys"
+        created = self.client.post(endpoint, json={"name": "Offline image client"}).json()
+        headers = {"Authorization": "Bearer " + created["api_key"]}
+        catalog = self.client.get(self.base + "/v1/models", headers=headers).json()
+        self.assertEqual(catalog["object"], "list")
+        by_id = {row["id"]: row for row in catalog["data"]}
+        self.assertEqual(by_id["auto"]["type"], "chat")
+        self.assertEqual(by_id["gpt-image-2"]["type"], "image")
+        self.assertIn("chatgpt-image-latest", by_id)
+        detail = self.client.get(self.base + "/v1/models/gpt-image-2", headers=headers)
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.json(), by_id["gpt-image-2"])
+        self.assertEqual(self.client.get(self.base + "/v1/models/unknown", headers=headers).status_code, 404)
+        for model in ("gpt-image-2", "chatgpt-image-latest", "gpt-unknown-model"):
+            reply = self.client.post(self.base + "/v1/chat/completions", headers=headers,
+                json={"model": model, "messages": [{"role": "user", "content": "Offline only"}]})
+            self.assertIn(reply.status_code, (400, 404))
+            self.assertIn("error", reply.json())
+        bad = self.client.post(self.base + "/v1/images/generations", headers=headers,
+            json={"prompt": "Offline only", "n": 2})
+        self.assertEqual(bad.status_code, 400)
+        self.assertEqual(bad.json()["error"]["param"], "n")
+        row = next(row for row in self.client.get(endpoint).json()["keys"] if row["id"] == created["key"]["id"])
+        self.assertEqual(row["request_count"], 0)
+        response = self.client.post(self.base + "/v1/images/generations", headers=headers,
+            json={"model": "chatgpt-image-latest", "prompt": "Offline only"})
+        self.assertEqual(response.status_code, 429)
+        row = next(row for row in self.client.get(endpoint).json()["keys"] if row["id"] == created["key"]["id"])
+        self.assertEqual(row["request_count"], 1)
+        self.client.patch(endpoint + "/" + created["key"]["id"], json={"status": "disabled"})
+        self.assertEqual(self.client.post(self.base + "/v1/images/generations", headers=headers, json={"prompt": "Offline"}).status_code, 401)
+        self.client.delete(endpoint + "/" + created["key"]["id"])
+        self.assertEqual(self.client.post(self.base + "/v1/images/generations", headers=headers, json={"prompt": "Offline"}).status_code, 401)
+
     def test_original_web_gateway_can_coexist_with_admin_console(self):
         previous_port = (self.workdir / "port").read_text()
         with (self.workdir / "gateway-test.log").open("w+") as log:

@@ -163,6 +163,14 @@ class UsageTrace:
     def set_model(self, sent_model):
         self.evidence = replace(self.evidence, sent_model=model_name(sent_model))
 
+    def observe_image_result(self, model, count):
+        """Record validated final native outputs without storing bytes or URLs."""
+        if type(count) is not int or not 1 <= count <= 10:
+            raise ValueError("Invalid image result count")
+        self.evidence = replace(self.evidence, upstream_model=model_name(model), image_requested=True,
+            generated_assets=frozenset("native-image-" + str(index) for index in range(count)),
+            terminal=True, done_received=True, output_started=True)
+
     def observe_event(self, event):
         if not isinstance(event, dict):
             return

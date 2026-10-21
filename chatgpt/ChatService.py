@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import random
+import re
 import uuid
 
 from fastapi import HTTPException
@@ -47,6 +48,7 @@ class ChatService:
         self.conversation_dispatched = False
         self.conversation_accepted = False
         self.conversation_rejected = False
+        self.generated_image_urls = {}
 
     async def set_dynamic_data(self, data):
         if self.req_token:
@@ -142,47 +144,31 @@ class ChatService:
     async def set_model(self):
         self.origin_model = self.data.get("model", "gpt-3.5-turbo-0125")
         self.resp_model = model_proxy.get(self.origin_model, self.origin_model)
-        if "gizmo" in self.origin_model or "g-" in self.origin_model:
+        if self.origin_model.startswith(("gizmo-g-", "g-")):
             self.gizmo_id = "g-" + self.origin_model.split("g-")[-1]
         else:
             self.gizmo_id = None
 
-        if "o3-mini-high" in self.origin_model:
-            self.req_model = "o3-mini-high"
-        elif "o3-mini-medium" in self.origin_model:
-            self.req_model = "o3-mini-medium"
-        elif "o3-mini-low" in self.origin_model:
-            self.req_model = "o3-mini-low"
-        elif "o3-mini" in self.origin_model:
-            self.req_model = "o3-mini"
-        elif "o3" in self.origin_model:
-            self.req_model = "o3"
-        elif "o1-preview" in self.origin_model:
-            self.req_model = "o1-preview"
-        elif "o1-pro" in self.origin_model:
-            self.req_model = "o1-pro"
-        elif "o1-mini" in self.origin_model:
-            self.req_model = "o1-mini"
-        elif "o1" in self.origin_model:
-            self.req_model = "o1"
-        elif "gpt-4.5o" in self.origin_model:
-            self.req_model = "gpt-4.5o"
-        elif "gpt-4o-canmore" in self.origin_model:
-            self.req_model = "gpt-4o-canmore"
-        elif "gpt-4o-mini" in self.origin_model:
-            self.req_model = "gpt-4o-mini"
-        elif "gpt-4o" in self.origin_model:
-            self.req_model = "gpt-4o"
-        elif "gpt-4-mobile" in self.origin_model:
-            self.req_model = "gpt-4-mobile"
-        elif "gpt-4" in self.origin_model:
-            self.req_model = "gpt-4"
-        elif "gpt-3.5" in self.origin_model:
-            self.req_model = "text-davinci-002-render-sha"
-        elif "auto" in self.origin_model:
+        historical = {
+            "gpt-3.5-turbo": "text-davinci-002-render-sha", "gpt-3.5-turbo-16k": "text-davinci-002-render-sha",
+            "gpt-3.5-turbo-1106": "text-davinci-002-render-sha", "gpt-4-32k": "gpt-4",
+            "gpt-4-turbo-preview": "gpt-4", "gpt-4-vision-preview": "gpt-4", "gpt-4-turbo": "gpt-4",
+            "gpt-4o": "gpt-4o", "gpt-4o-mini": "gpt-4o-mini", "o1-preview": "o1-preview",
+            "o1-mini": "o1-mini", "o1": "o1", "o3-mini": "o3-mini", "o3-mini-high": "o3-mini-high",
+        }
+        aliases = {**historical, **{model_proxy[name]: target for name, target in historical.items() if name in model_proxy}}
+        if self.gizmo_id or self.origin_model in ("auto", "chatgpt-image-latest"):
+            # The named web-image bridge uses the account's web model; it is
+            # deliberately distinct from the native GPT Image 2 endpoint.
             self.req_model = "auto"
+        elif self.origin_model in aliases:
+            self.req_model = aliases[self.origin_model]
+        elif self.origin_model != "gpt-image-2" and re.fullmatch(r"(?:gpt-[a-z0-9][a-z0-9._-]*|o[134](?:[-.][a-z0-9][a-z0-9._-]*)?)", self.origin_model):
+            # Native discovered identifiers must survive unchanged, including
+            # gpt-4.1, thinking variants and o3-pro. Substrings are not aliases.
+            self.req_model = self.origin_model
         else:
-            self.req_model = "gpt-4o"
+            raise HTTPException(404, "Unknown model; query /v1/models for supported identifiers.")
 
     async def get_chat_requirements(self):
         if conversation_only:
@@ -416,6 +402,7 @@ class ChatService:
             r = await self.s.get(url, headers=headers, timeout=10)
             if r.status_code == 200:
                 download_url = r.json().get('download_url')
+                self.record_generated_image(file_id, download_url)
                 return download_url
             else:
                 raise HTTPException(status_code=r.status_code, detail=r.text)
@@ -430,12 +417,18 @@ class ChatService:
             r = await self.s.get(url, headers=headers, timeout=10)
             if r.status_code == 200:
                 download_url = r.json().get('download_url')
+                self.record_generated_image(file_id, download_url)
                 return download_url
             else:
                 raise HTTPException(status_code=r.status_code, detail=r.text)
         except Exception as e:
             logger.error(f"Failed to get download url: {e}")
             return ""
+
+    def record_generated_image(self, file_id, url):
+        evidence = getattr(self.usage_trace, "evidence", None)
+        if evidence and file_id in evidence.generated_assets and isinstance(url, str):
+            self.generated_image_urls = {**self.generated_image_urls, file_id: url}
 
     async def get_download_url_from_upload(self, file_id):
         url = f"{self.base_url}/files/{file_id}/uploaded"

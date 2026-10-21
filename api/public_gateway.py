@@ -20,20 +20,24 @@ from curl_cffi import CurlOpt
 from curl_cffi.requests import AsyncSession
 from dotenv import dotenv_values
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from starlette.background import BackgroundTask
 
 from chatgpt.api_keys import APIKeyStore, MANAGED_PREFIX, ManagedKeyError, resolve_managed_key
+from utils.disconnect import ClientDisconnected, run_connected
 
 
 ROOT = Path(__file__).resolve().parents[1]
 MAX_BODY_BYTES = 2 * 1024 * 1024
 MAX_IMAGE_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+MAX_IMAGE_RESPONSE_BYTES = 32 * 1024 * 1024
 MAX_ACTIVE_REQUESTS = 10
 BODY_TIMEOUT_SECONDS = 30
 UPSTREAM_TIMEOUT_SECONDS = 180
-ALLOWED_ROUTES = {("POST", b"/v1/chat/completions"), ("GET", b"/v1/models")}
+IMAGE_UPSTREAM_TIMEOUT_SECONDS = 600
+ALLOWED_ROUTES = {("POST", b"/v1/chat/completions"), ("POST", b"/v1/images/generations"), ("GET", b"/v1/models")}
+MODEL_ROUTE = re.compile(rb"/v1/models/[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 IMAGE_DATA_URL = re.compile(r"data:image/(?:png|jpeg|webp|gif);base64,([A-Za-z0-9+/]+={0,2})")
 
 
@@ -52,8 +56,15 @@ class GatewaySettings:
 
     @property
     def upstream_url(self):
+        return self.upstream_for("/v1/chat/completions")
+
+    def upstream_for(self, path):
+        # Callers pass an explicit endpoint or a model path already matched by
+        # MODEL_ROUTE; no URL, query or attachment source controls this origin.
+        if path not in ("/v1/chat/completions", "/v1/images/generations", "/v1/models") and MODEL_ROUTE.fullmatch(path.encode("ascii")) is None:
+            raise ValueError("Unsupported upstream API path")
         prefix = "/" + self.api_prefix if self.api_prefix else ""
-        return "http://127.0.0.1:5005" + prefix + "/v1/chat/completions"
+        return "http://127.0.0.1:5005" + prefix + path
 
 
 def load_settings():
@@ -148,7 +159,7 @@ def validate_attachments(data):
     return None
 
 
-async def read_body(request):
+async def read_body(request, *, image_generation=False):
     raw_length = request.headers.get("content-length")
     if raw_length is not None:
         if not raw_length.isascii() or not raw_length.isdigit():
@@ -173,6 +184,16 @@ async def read_body(request):
         return None, error(400, "invalid_json", "Request body must be a JSON object.")
     if "stream" in data and not isinstance(data["stream"], bool):
         return None, error(400, "invalid_stream", "stream must be a boolean.")
+    if image_generation:
+        prompt = data.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 32000:
+            return None, error(400, "invalid_prompt", "prompt must be a non-empty string of at most 32000 characters.")
+        if "model" in data and (not isinstance(data["model"], str) or not data["model"].strip() or len(data["model"]) > 100):
+            return None, error(400, "invalid_model", "model must be a non-empty string of at most 100 characters.")
+        # The generation endpoint accepts a textual prompt, not input files or
+        # remote download sources. Other parameters remain for private validation.
+        if any(name in data for name in ("image", "images", "image_url", "input_image", "mask", "file", "files", "file_url", "url")):
+            return None, error(400, "unsupported_attachment", "Image generations accepts a prompt, not input attachments or download URLs.")
     attachment_error = validate_attachments(data)
     if attachment_error is not None:
         return None, attachment_error
@@ -197,7 +218,8 @@ def create_app(settings=None, client_factory=AsyncSession, key_store=None):
     @application.middleware("http")
     async def boundary(request, call_next):
         raw_path = request.scope.get("raw_path", request.url.path.encode()).split(b"?", 1)[0]
-        if (request.method, raw_path) not in ALLOWED_ROUTES or request.scope.get("query_string"):
+        allowed = (request.method, raw_path) in ALLOWED_ROUTES or (request.method == "GET" and MODEL_ROUTE.fullmatch(raw_path) is not None)
+        if not allowed or request.scope.get("query_string"):
             response = error(404, "not_found", "This gateway only exposes the supported API endpoints.")
         elif application.state.settings is None or not application.state.settings.keys:
             response = error(503, "gateway_unconfigured", "The public API key has not been configured.")
@@ -220,13 +242,7 @@ def create_app(settings=None, client_factory=AsyncSession, key_store=None):
         response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
-    @application.get("/v1/models")
-    async def models():
-        return {"object": "list", "data": [{"id": "auto", "object": "model", "created": 0,
-                    "owned_by": "chat2api", "description": "Supported default: account-selected upstream model"}]}
-
-    @application.post("/v1/chat/completions")
-    async def chat(request: Request):
+    async def forward(request, path, *, method="POST", image_generation=False):
         if application.state.active_requests >= MAX_ACTIVE_REQUESTS:
             return error(429, "gateway_busy", "The gateway is handling 10 requests. Please retry later.",
                          {"Retry-After": "5"})
@@ -245,60 +261,89 @@ def create_app(settings=None, client_factory=AsyncSession, key_store=None):
             finally:
                 application.state.active_requests -= 1
 
-        try:
-            data, rejection = await read_body(request)
-            if rejection is not None:
-                return rejection
-            if data["stream"] and not application.state.settings.streaming:
-                return error(400, "streaming_unavailable",
-                    "This temporary public endpoint does not support SSE. Set stream to false, or use the local API for streaming.")
-            client = client_factory(trust_env=False, curl_options={CurlOpt.PROXY: ""},
-                                    timeout=(5, UPSTREAM_TIMEOUT_SECONDS))
-            response = await client.post(application.state.settings.upstream_url,
-                headers={"Authorization": "Bearer " + request.state.api_key, "Content-Type": "application/json"},
-                json=data, stream=True, allow_redirects=False)
-            if not 200 <= response.status_code < 300:
-                status = response.status_code if response.status_code in (400, 401, 403, 409, 413, 422, 429, 500, 502, 503, 504) else 502
-                headers = {}
-                retry = response.headers.get("retry-after", "")
-                if retry.isascii() and retry.isdigit() and len(retry) < 5 and 1 <= int(retry) <= 3600:
-                    headers["Retry-After"] = retry
-                return error(status, "upstream_request_failed", "The private API could not complete this request. Check the local account dashboard.", headers)
-            content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-            if data["stream"]:
-                if content_type != "text/event-stream":
-                    return error(502, "invalid_upstream_response", "The private API did not return an event stream.")
-
-                async def events():
-                    try:
-                        async for chunk in response.aiter_content():
-                            yield chunk
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        yield b'data: {"error":{"code":"upstream_stream_error","message":"Response interrupted."}}\n\ndata: [DONE]\n\n'
-                    finally:
-                        await asyncio.shield(cleanup())
-
-                handed_off = True
-                return StreamingResponse(events(), media_type="text/event-stream",
-                    headers={"X-Accel-Buffering": "no"}, background=BackgroundTask(cleanup))
-            if content_type != "application/json":
-                return error(502, "invalid_upstream_response", "The private API did not return JSON.")
-            chunks, size = [], 0
-            async with asyncio.timeout(UPSTREAM_TIMEOUT_SECONDS):
-                async for chunk in response.aiter_content():
-                    size += len(chunk)
-                    if size > MAX_RESPONSE_BYTES:
-                        return error(502, "upstream_response_too_large", "The private API response exceeded the gateway limit.")
-                    chunks.append(chunk)
+        async def forward_upstream(data):
+            nonlocal client
+            stream_ready = False
             try:
-                payload = json.loads(b"".join(chunks))
-            except (ValueError, UnicodeError):
-                return error(502, "invalid_upstream_response", "The private API returned invalid JSON.")
-            if not isinstance(payload, dict):
-                return error(502, "invalid_upstream_response", "The private API returned invalid JSON.")
-            return JSONResponse(payload)
+                streaming = data is not None and data["stream"]
+                if streaming and not application.state.settings.streaming:
+                    return error(400, "streaming_unavailable",
+                        "This temporary public endpoint does not support SSE. Set stream to false, or use the local API for streaming.")
+                timeout_seconds = IMAGE_UPSTREAM_TIMEOUT_SECONDS if image_generation else UPSTREAM_TIMEOUT_SECONDS
+                response_limit = MAX_IMAGE_RESPONSE_BYTES if image_generation else MAX_RESPONSE_BYTES
+                client = client_factory(trust_env=False, curl_options={CurlOpt.PROXY: ""},
+                                        timeout=(5, timeout_seconds))
+                target = application.state.settings.upstream_for(path)
+                headers = {"Authorization": "Bearer " + request.state.api_key}
+                if method == "POST":
+                    response = await client.post(target, headers={**headers, "Content-Type": "application/json"},
+                        json=data, stream=True, allow_redirects=False)
+                else:
+                    response = await client.get(target, headers=headers, stream=True, allow_redirects=False)
+                if not 200 <= response.status_code < 300:
+                    status = response.status_code if response.status_code in (400, 401, 403, 404, 409, 413, 422, 429, 500, 502, 503, 504) else 502
+                    headers = {}
+                    retry = response.headers.get("retry-after", "")
+                    if retry.isascii() and retry.isdigit() and len(retry) < 5 and 1 <= int(retry) <= 3600:
+                        headers["Retry-After"] = retry
+                    return error(status, "upstream_request_failed", "The private API could not complete this request. Check the local account dashboard.", headers)
+                content_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                if streaming:
+                    if content_type != "text/event-stream":
+                        return error(502, "invalid_upstream_response", "The private API did not return an event stream.")
+
+                    async def events():
+                        try:
+                            async for chunk in response.aiter_content():
+                                yield chunk
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            yield b'data: {"error":{"code":"upstream_stream_error","message":"Response interrupted."}}\n\ndata: [DONE]\n\n'
+                        finally:
+                            await asyncio.shield(cleanup())
+
+                    stream_ready = True
+                    return StreamingResponse(events(), media_type="text/event-stream",
+                        headers={"X-Accel-Buffering": "no"}, background=BackgroundTask(cleanup))
+                if content_type != "application/json":
+                    return error(502, "invalid_upstream_response", "The private API did not return JSON.")
+                chunks, size = [], 0
+                async with asyncio.timeout(timeout_seconds):
+                    async for chunk in response.aiter_content():
+                        size += len(chunk)
+                        if size > response_limit:
+                            return error(502, "upstream_response_too_large", "The private API response exceeded the gateway limit.")
+                        chunks.append(chunk)
+                try:
+                    payload = json.loads(b"".join(chunks))
+                except (ValueError, UnicodeError):
+                    return error(502, "invalid_upstream_response", "The private API returned invalid JSON.")
+                if not isinstance(payload, dict):
+                    return error(502, "invalid_upstream_response", "The private API returned invalid JSON.")
+                return JSONResponse(payload)
+            finally:
+                if not stream_ready:
+                    await cleanup()
+
+        try:
+            data = None
+            if method == "POST":
+                data, rejection = await read_body(request, image_generation=image_generation)
+                if rejection is not None:
+                    return rejection
+            # The body reader has finished before the disconnect watcher owns
+            # receive. Once an SSE response is returned, its own listener takes
+            # over; non-streaming forwarding remains monitored through EOF.
+            result = await run_connected(request, forward_upstream(data))
+            # Transfer cleanup ownership only after the watcher has stopped.
+            # Cancellation during that handoff must still close the client.
+            handed_off = isinstance(result, StreamingResponse)
+            return result
+        except ClientDisconnected:
+            # BaseHTTPMiddleware expects a response even when the socket has
+            # already closed; avoid reporting normal disconnects as HTTP 500.
+            return Response(status_code=499)
         except asyncio.CancelledError:
             raise
         except TimeoutError:
@@ -309,6 +354,30 @@ def create_app(settings=None, client_factory=AsyncSession, key_store=None):
         finally:
             if not handed_off:
                 await asyncio.shield(cleanup())
+
+    @application.get("/v1/models")
+    async def models(request: Request):
+        return await forward(request, "/v1/models", method="GET")
+
+    @application.get("/v1/models/{model_id}")
+    async def model(request: Request, model_id: str):
+        # Validate again for direct endpoint invocation as well as middleware.
+        path = "/v1/models/" + model_id
+        try:
+            valid = MODEL_ROUTE.fullmatch(path.encode("ascii")) is not None
+        except UnicodeError:
+            valid = False
+        if not valid:
+            return error(404, "not_found", "Unsupported model identifier.")
+        return await forward(request, path, method="GET")
+
+    @application.post("/v1/chat/completions")
+    async def chat(request: Request):
+        return await forward(request, "/v1/chat/completions")
+
+    @application.post("/v1/images/generations")
+    async def images(request: Request):
+        return await forward(request, "/v1/images/generations", image_generation=True)
 
     return application
 

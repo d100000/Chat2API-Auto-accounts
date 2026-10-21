@@ -7,9 +7,9 @@
   <title>Chat2API · API 接入与密钥</title>
   <script src="/static/local-console/theme.js?v=20261021g"></script>
   <link rel="stylesheet" href="/static/local-console/console.css?v=20261021g">
-  <link rel="stylesheet" href="/static/local-console/connection.css?v=20261021g">
+  <link rel="stylesheet" href="/static/local-console/connection.css?v=20261021h">
   <script src="/static/local-console/ui.js?v=20261021g" defer></script>
-  <script src="/static/local-console/connection.js?v=20261021g" defer></script>
+  <script src="/static/local-console/connection.js?v=20261021h" defer></script>
 </head>
 <body class="connection-page">
   <a class="skip-link" href="#connection-section-tabs">跳到接入与密钥</a>
@@ -32,7 +32,7 @@
         <div class="connection-fields">
           <div class="field connection-field"><label for="connection-base-url">Base URL <span class="field-qualifier">当前本机地址</span></label><div class="connection-control"><input id="connection-base-url" class="connection-mono" value="正在读取…" readonly spellcheck="false" aria-describedby="connection-base-hint"><button id="connection-copy-base" class="button button-secondary" type="button" disabled aria-label="复制本机 Base URL">复制</button></div><p id="connection-base-hint" class="field-hint">填入支持自定义 Base URL 的客户端。云端程序需要改用服务的 HTTPS 公网地址。</p></div>
           <div class="field connection-field"><label for="connection-api-key">系统密钥 <span class="field-qualifier">.env 管理 · 只读</span></label><div class="connection-control connection-key-control"><input id="connection-api-key" class="connection-mono" type="text" value="••••••••••••••••••••••••" readonly autocomplete="off" spellcheck="false" aria-describedby="connection-key-hint"><button id="connection-reveal-key" class="button button-secondary" type="button" disabled aria-pressed="false">显示</button><button id="connection-copy-key" class="button button-secondary" type="button" disabled aria-label="复制系统密钥">复制</button></div><p id="connection-key-hint" class="field-hint">系统密钥来自 AUTHORIZATION。应用密钥可在「密钥管理」中独立创建、停用和撤销。</p><p id="connection-key-status" class="connection-key-status" role="status" aria-live="polite"></p></div>
-          <div class="field connection-field connection-model-field"><label for="connection-model">模型</label><div class="connection-control"><input id="connection-model" class="connection-mono" value="auto" readonly><button id="connection-copy-model" class="button button-secondary" type="button" disabled aria-label="复制模型名称">复制</button></div><p class="field-hint">auto 已验证可用，其他模型需单独测试。</p></div>
+          <div class="field connection-field connection-model-field"><label for="connection-model">默认聊天模型</label><div class="connection-control"><input id="connection-model" class="connection-mono" value="auto" readonly><button id="connection-copy-model" class="button button-secondary" type="button" disabled aria-label="复制模型名称">复制</button></div><p class="field-hint">先使用 auto。原生聊天模型标识和两种图片接口见下方目录。</p></div>
         </div>
         <div class="connection-panel-footer"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4v5c0 5-8 9-8 9s-8-4-8-9V7z"/><path d="m8 12 3 3 5-5"/></svg><p>管理员密码用于登录后台，API Key 用于应用调用。</p></div>
       </section>
@@ -42,11 +42,18 @@
           <p id="connection-public-intro" class="connection-cloud-intro">正在检查公网入口。</p>
           <p id="connection-public-description" class="connection-cloud-description">云服务器上的 <code>127.0.0.1</code> 指向云服务器自身，不能直接连接这台 Mac。</p>
           <div class="field connection-public-field"><label for="connection-public-url">公网 Base URL</label><div class="connection-control"><input id="connection-public-url" class="connection-mono" value="正在读取…" readonly spellcheck="false" aria-describedby="connection-public-hint"><button id="connection-copy-public" class="button button-secondary" type="button" disabled aria-label="复制公网 Base URL">复制</button></div><p id="connection-public-hint" class="field-hint">仅展示实际运行的公网入口，不会生成示例域名。</p></div>
-          <dl class="connection-cloud-facts"><div><dt>默认模型</dt><dd><code>auto</code></dd></div><div><dt>响应方式</dt><dd>非流式 <code>stream: false</code></dd></div><div><dt>访问权限</dt><dd>仅聊天与模型接口</dd></div></dl>
+          <dl class="connection-cloud-facts"><div><dt>默认聊天模型</dt><dd><code>auto</code></dd></div><div><dt>聊天响应</dt><dd id="connection-public-streaming">非流式 <code>stream: false</code></dd></div><div><dt>访问权限</dt><dd>模型查询、聊天、图片生成</dd></div></dl>
           <p class="connection-cloud-footnote">临时地址需要 Mac、服务和隧道保持在线。管理后台与凭据接口仅在本地开放。</p>
           <button id="connection-open-keys" class="button button-primary" type="button">创建应用专用密钥 <span aria-hidden="true">↗</span></button>
         </div>
       </aside>
+      <section class="connection-panel connection-catalog" aria-labelledby="connection-catalog-title" aria-busy="true">
+        <div class="connection-panel-heading"><div><h2 id="connection-catalog-title">模型目录 <span id="connection-model-count" class="connection-tab-count">—</span></h2><p class="field-hint">同一 Base URL 和 API Key，按模型类型调用对应接口。</p></div><div class="field connection-catalog-search"><label for="connection-model-search" class="sr-only">搜索模型</label><input id="connection-model-search" type="search" placeholder="搜索模型名称…" autocomplete="off" disabled></div></div>
+        <p id="connection-model-loading" class="connection-list-empty" role="status">正在读取模型目录…</p>
+        <p id="connection-model-empty" class="connection-list-empty" hidden>没有匹配的模型，请调整搜索内容。</p>
+        <div id="connection-model-table-wrap" class="connection-catalog-scroll" tabindex="0" role="region" aria-label="模型与可调用接口" hidden><table class="connection-model-table"><thead><tr><th scope="col">模型</th><th scope="col">类型与来源</th><th scope="col">接口</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead><tbody id="connection-model-rows"></tbody></table></div>
+        <div class="connection-panel-footer"><p>聊天目录来自一个可用账号，5 分钟缓存；刷新失败最多保留 24 小时旧目录。列出模型不代表所有账号均可使用。网页生图不保证原生 Image2 身份；原生 <code>gpt-image-2</code> 默认未启用，需独立 Codex 授权。</p></div>
+      </section>
     </div>
     <section id="connection-keys-panel" role="tabpanel" aria-labelledby="connection-section-keys" tabindex="0" hidden>
       <div class="connection-panel connection-create-panel">
@@ -61,12 +68,14 @@
         <div id="connection-keys-loading" class="connection-list-empty" role="status">正在读取应用密钥…</div>
         <div id="connection-keys-empty" class="connection-list-empty" hidden><h3>还没有应用密钥</h3><p>为第一个调用方创建密钥，连接后即可在这里查看状态和调用记录。</p></div>
         <div id="connection-keys-table-wrap" hidden><table class="connection-keys-table"><thead><tr><th scope="col">名称与密钥</th><th scope="col">状态</th><th scope="col">最近调用</th><th scope="col">调用次数</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead><tbody id="connection-key-rows"></tbody></table></div>
-        <div class="connection-panel-footer"><p>调用次数为本机聊天接口受理次数，不代表成功次数；模型列表查询不计入。系统密钥由 <code>.env</code> 中的 <code>AUTHORIZATION</code> 配置，保留在「连接参数」中。</p></div>
+        <div class="connection-panel-footer"><p>调用次数为聊天或图片生成接口受理次数，不代表成功次数；模型查询不计入。系统密钥由 <code>.env</code> 中的 <code>AUTHORIZATION</code> 配置，保留在「连接参数」中。</p></div>
       </section>
     </section>
     <section id="connection-examples-panel" class="connection-panel connection-example" role="tabpanel" aria-labelledby="connection-section-examples" tabindex="0" hidden>
-      <div class="connection-panel-heading connection-example-heading"><div><h2 id="connection-example-title">请求示例</h2><p class="field-hint">POST /v1/chat/completions · Bearer 认证</p></div><button id="connection-copy-example" class="button button-secondary" type="button" disabled>复制 cURL</button></div>
+      <div class="connection-panel-heading connection-example-heading"><div><h2 id="connection-example-title">请求示例</h2><p id="connection-example-endpoint" class="field-hint">POST /v1/chat/completions · Bearer 认证</p></div><button id="connection-copy-example" class="button button-secondary" type="button" disabled>复制 cURL</button></div>
+      <div class="connection-example-kind"><div class="connection-tabs" role="tablist" aria-label="请求类型" data-motion-tabs><button id="connection-kind-models" class="connection-tab" type="button" role="tab" aria-selected="false" aria-controls="connection-example-panel" tabindex="-1" data-kind="models">模型查询</button><button id="connection-kind-chat" class="connection-tab" type="button" role="tab" aria-selected="true" aria-controls="connection-example-panel" tabindex="0" data-kind="chat">GPT 聊天</button><button id="connection-kind-images" class="connection-tab" type="button" role="tab" aria-selected="false" aria-controls="connection-example-panel" tabindex="-1" data-kind="images">图片生成</button></div><div id="connection-image-options" class="field connection-image-options" hidden><label for="connection-image-model">图片模型</label><select id="connection-image-model"><option value="chatgpt-image-latest">chatgpt-image-latest · 网页生图</option><option value="gpt-image-2">gpt-image-2 · 原生 / 需独立授权</option></select></div></div>
       <div class="connection-example-toolbar"><div class="connection-tabs" role="tablist" aria-label="调用环境" data-motion-tabs><button id="connection-cloud-tab" class="connection-tab" type="button" role="tab" aria-selected="true" aria-controls="connection-example-panel" tabindex="0" data-example="cloud">云端调用</button><button id="connection-local-tab" class="connection-tab" type="button" role="tab" aria-selected="false" aria-controls="connection-example-panel" tabindex="-1" data-example="local">本机验证</button></div><p id="connection-example-hint" class="field-hint">先设置 CHAT2API_BASE_URL 为已部署的 HTTPS 公网 Base URL。</p></div>
+      <p id="connection-image-note" class="connection-image-note notice notice-warning" hidden></p>
       <div id="connection-example-panel" role="tabpanel" aria-labelledby="connection-cloud-tab" tabindex="0"><pre class="connection-code"><code id="connection-curl">正在读取接入参数…</code></pre></div>
       <div class="connection-example-footer"><p><code>CHAT2API_API_KEY</code> 需设置为有效的应用密钥或系统密钥。示例不包含真实密钥，也不会自动发送请求。</p><a href="/playground" class="text-link">在测试台验证 <span aria-hidden="true">↗</span></a></div>
     </section>

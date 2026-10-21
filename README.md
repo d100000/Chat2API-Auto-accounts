@@ -1,15 +1,15 @@
 # Chat2API Auto Accounts
 
-把已登录的 ChatGPT 网页账号接入服务，供支持 OpenAI Chat Completions 格式的客户端调用。项目基于 Python / FastAPI，把原版 Chat2API 的聊天、图文和凭据能力，与账号额度、自动调度、API 密钥管理整合到一个管理工作区。
+把已登录的 ChatGPT 网页账号接入服务，供支持 OpenAI 格式的客户端查询模型、聊天和生成图片。同一 Base URL 与 API Key 可调用 Chat Completions 和 Images Generations。项目基于 Python / FastAPI，把原版 Chat2API 的聊天、图文和凭据能力，与账号额度、自动调度、API 密钥管理整合到一个管理工作区。
 
 ```text
 兼容客户端 / 本地测试台
           ↓
-POST /v1/chat/completions
+GET /v1/models · POST /v1/chat/completions · POST /v1/images/generations
           ↓
 按请求类型、额度与并发预留选择可用账号
           ↓
-ChatGPT 网页接口 → 转换为 JSON / SSE 聊天响应
+ChatGPT 网页接口 → JSON / SSE 聊天响应或标准图片响应
 ```
 
 这是基于 [lanqian528/chat2api](https://github.com/lanqian528/chat2api) 修改的非官方项目，不是 OpenAI 官方 API 服务。它使用网页账号的权限和限额，稳定性取决于账号状态、网络及上游网页接口变化。
@@ -17,13 +17,14 @@ ChatGPT 网页接口 → 转换为 JSON / SSE 聊天响应
 ## 已实现的功能
 
 - **聊天接口**：`POST /v1/chat/completions`，支持流式 SSE 和非流式 JSON 响应。
+- **图片接口**：`POST /v1/images/generations`，默认用 `chatgpt-image-latest` 将网页生图转换为标准图片响应，按网页生图额度选账号。另保留原生 `gpt-image-2` 独立通道，默认禁用，需另行具备 Codex 授权。
 - **额度调度**：使用本地 API Key 调用账号池时，优先选择额度充足的账号；区分大模型和生图额度，耗尽后切换，重置后经查询确认再加入可用池。
 - **Token 池**：从文件或管理页面导入凭据，合并可识别的同账号 Token，并排除已记录的异常或过期凭据。
 - **本地管理登录**：使用用户名和 PBKDF2 密码哈希登录，保护测试台和 Token 管理入口。
 - **浏览器测试台**：发送消息、临时多轮对话、切换流式响应、查看 HTTP 状态、耗时和首字时间。页面会显示本地 Token 数量与异常标记数量。
-- **图片测试**：测试台支持图片 URL 输入和生图模式；生图仍通过 Chat Completions，请求启用历史并按 `image_gen` 额度调度，实际输出取决于上游账号能力。
+- **图片测试**：测试台支持图片 URL 输入和原有聊天生图模式；API 接入页提供标准图片接口示例。网页生图启用会话历史，实际输出取决于上游账号能力。
 - **API 密钥管理**：按用途创建独立应用密钥、停用、恢复和撤销，查看最近使用时间与受理次数；密钥明文只在创建时返回一次，数据库只存摘要。
-- **API 接入**：复制本机或临时公网 Base URL，查看本机流式和公网非流式 cURL 示例；`GET /v1/models` 返回默认 `auto`，不冒充上游模型发现。
+- **API 接入与模型目录**：复制本机或临时公网 Base URL，查询真实聊天模型标识和两种图片模型，查看模型查询、GPT 聊天、图片生成三类 cURL 示例；目录标明类型、来源与对应接口。
 - **原功能入口**：统一展示原网页网关、GPTs、Seed 管理、Token 刷新与运行配置；保留继承路由，明确显示是否启用和调用条件。
 - **账号与额度**：查看 ChatGPT 网页返回的大模型 `reason`、生图 `image_gen` 剩余量、重置时间，以及其他功能和模型限制；支持单账号或全部账号刷新。
 - **调度状态**：查看各能力是否可选、执行中的请求、等待刷新或冷却的原因，以及最近的账号选择、切换、耗尽和恢复事件。
@@ -34,8 +35,8 @@ ChatGPT 网页接口 → 转换为 JSON / SSE 聊天响应
 
 ## 使用边界
 
-- 建议先使用 `model: "auto"`。代码保留了一些模型别名与回退逻辑；响应里的 `model` 标签不能证明实际使用了同名底层模型，也不代表该模型当前可用。
-- 默认配置的兼容范围以现有聊天接口为准。**没有实现标准 `/v1/images/generations`、`/v1/images/edits` 或 `/v1/responses` 路由**。`/v1/models` 仅列出默认 `auto`，不表示已探测所有上游模型。上游聊天可能返回图片内容，这不等于提供标准 Images API。
+- 聊天建议先使用 `model: "auto"`，或从 `GET /v1/models` 读取当前聊天模型标识。目录中的原生聊天标识直接发送上游；响应里的 `model` 标签不能独立证明底层模型身份，也不保证所有账号均有权限。
+- 已提供模型查询、Chat Completions 和 Images Generations；**没有实现 `/v1/images/edits` 或 `/v1/responses` 路由**。网页图片模型 `chatgpt-image-latest` 不保证底层原生 Image2 身份。`gpt-image-2` 默认禁用，需要独立 Codex 授权，当前没有宣称已验证原生调用成功；也不会失败后自动改用网页生图。
 - 额度页面展示查询时的上游快照，调度器另行记录本地预留。未返回的额度保持未知，不能用本地调用次数推算官方余额，也不提供“无限使用”能力。
 - 测试台的聊天记录只存在于当前页面，刷新或退出后清空。`max_tokens` 等参数不保证被网页上游严格执行。
 - 当前部署要求主服务和可选公网网关分别使用**单进程、单 worker**，不要添加 `--workers` 或多个主服务副本：登录会话、刷新限频和并发控制保存在进程内，本地账本也按单进程重启恢复未完成请求。管理页面固定使用 `127.0.0.1:5005` 或 `localhost:5005`；临时公网只开放独立的 API 网关。
@@ -150,7 +151,7 @@ python scripts/local_service.py stop
 
 在 `/connection` 的「密钥管理」页签中，按客户端用途创建应用密钥，例如“云服务器”或“本地客户端”。新密钥只在创建弹窗出现一次，请复制保存。之后列表只显示掩码，可立即停用或恢复；撤销不可恢复。密钥保存在 `data/api-keys.sqlite3`，权限为 `0600`，只存随机密钥的 SHA-256 摘要和管理元数据。
 
-每个应用密钥使用同一账号池和额度调度。列表的「受理次数」统计通过基本鉴权和消息格式校验的聊天请求，包括后续失败的调用，不等于成功次数或官方计费次数；模型列表请求不计数。已有 `.env` 的 `AUTHORIZATION` 系统密钥继续兼容，在页面单独显示，须编辑环境配置后重启才能更换。应用密钥的启停、撤销无需重启，已在执行中的请求不会被强制中断。
+每个应用密钥使用同一账号池；网页聊天与网页生图共用额度调度。列表的「受理次数」统计通过鉴权、格式及通道检查后受理的聊天或图片生成请求，包括后续失败的调用，不等于成功次数或官方计费次数；模型查询不计数，默认禁用的原生图片请求也不计生成。已有 `.env` 的 `AUTHORIZATION` 系统密钥继续兼容，在页面单独显示，须编辑环境配置后重启才能更换。应用密钥的启停、撤销无需重启，已在执行中的请求不会被强制中断。
 
 ```bash
 export CHAT2API_KEY='YOUR_APPLICATION_KEY'
@@ -172,7 +173,7 @@ python scripts/public_service.py stop
 
 脚本启动仅监听 `127.0.0.1:5006` 的独立 API 网关，再创建随机 `https://*.trycloudflare.com` 地址。实际 Base URL 会显示在 `/connection`；每次重新创建隧道可能变化。Mac、主服务和隧道都需在线，停止隧道后地址失效。此方式用于联调，不提供生产可用性保证。
 
-公网仅开放带 API Key 的 `POST /v1/chat/completions` 和 `GET /v1/models`，拒绝直接网页账号凭据；后台、账号、凭据、Seed 与文档路由不会通过此网关公开。网关每次读取应用密钥状态，撤销立即影响后续请求。单请求正文上限 2 MiB，同时最多受理 10 个请求，不自动重放生成请求。公网图文输入只接受内联 data:image（PNG/JPEG/WebP/GIF），每图解码后不超过 1 MiB；HTTP(S) 图片 URL 输入保留在私有本机服务。公网启动要求 UPLOAD_BY_URL=false，防止外部请求让服务读取本机或内网文件。
+公网仅开放带 API Key 的 `GET /v1/models`、`GET /v1/models/{id}`、`POST /v1/chat/completions` 和 `POST /v1/images/generations`，拒绝直接网页账号凭据；后台、账号、凭据、Seed 与文档路由不会通过此网关公开。网关每次读取应用密钥状态，撤销立即影响后续请求。单请求正文上限 2 MiB，同时最多受理 10 个请求，不自动重放生成请求。公网图文输入只接受内联 data:image（PNG/JPEG/WebP/GIF），每图解码后不超过 1 MiB；HTTP(S) 图片 URL 输入保留在私有本机服务。公网启动要求 UPLOAD_BY_URL=false，防止外部请求让服务读取本机或内网文件。
 
 [Cloudflare Quick Tunnel 不支持 SSE](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)，公网联调必须使用 `stream:false`；`stream:true` 会明确返回 400。本机流式聊天仍可正常使用。不要直接把完整的 5005 服务转发到公网。
 
@@ -180,7 +181,7 @@ python scripts/public_service.py stop
 
 本仓库是在 `lanqian528/chat2api` 上增加管理功能，不是 Electron 多供应商桌面项目。原有聊天协议转换、模型映射、图文消息、工具输出、网页会话参数、Token 管理、Refresh Token 刷新、Seed 和网页网关代码均保留；`/features` 按当前配置列出入口和限制。
 
-- 普通聊天和生图可在 `/playground` 直接测试；图文输入支持 Chat Completions 的 `text` / `image_url` 消息。生图模式使用 `history_disabled:false`，不会伪造独立 Images API。
+- 普通聊天和原有对话生图可在 `/playground` 直接测试；图文输入支持 Chat Completions 的 `text` / `image_url` 消息。原有生图模式使用 `history_disabled:false`，同时新增独立 Images Generations 路由；两种入口都保留。
 - `/tokens` 提供批量导入、错误凭据查看、清空账号池及清空 Seed 会话映射。清空操作需要在页面确认。
 - 账号详情分为「概览、调度、更多额度、模型记录」，原有信息仍保留，默认只展示常用概览。
 - 继承的网页网关默认 `ENABLE_GATEWAY=false`。启用并重启后，`/gateway`、`/gateway/login` 为原网页入口，`/gpts`、`/seedtoken`、`/auth/refresh` 等继承路由生效；管理员仍使用 `/login`，无需覆盖后台入口。网关使用继承的网页资源，上游兼容性需按实际账号验证。
@@ -200,6 +201,8 @@ python scripts/public_service.py stop
 | 管理页面 | `/accounts`、`api/local_console.py` | 合并快照、账本和调度状态；“更新本地视图”读取本地记录，“刷新额度”请求上游元数据 |
 
 这些数据文件均保存在私有 `data/` 目录，文件权限为 `0600`。额度缓存与调度状态只使用匿名账号标识；调度状态和用量账本不保存 Token、提示词、回复正文、图片 URL 或原始错误正文。不要把运行时 `data/` 提交到仓库。
+
+模型目录由 `chatgpt/model_catalog.py` 维护，单独存为 `data/model_catalog.json`，只保存经过校验的聊天模型标识和刷新时间。首次查询懒加载，正常缓存 5 分钟；刷新失败保留最长 24 小时的旧目录，不会把账号、访问凭据或上游原始描述写入目录。
 
 ### 刷新与时间口径
 
@@ -267,22 +270,71 @@ python scripts/public_service.py stop
 
 | 配置项 | 值 |
 | --- | --- |
-| API 类型 | OpenAI Chat Completions |
+| API 类型 | OpenAI Chat Completions / Images Generations |
 | Base URL | `http://127.0.0.1:5005/v1` |
-| API Key | `.env` 中设置的 `AUTHORIZATION` |
-| 模型 | 手动填写 `auto` |
+| API Key | 在「API 接入与密钥」创建应用密钥，或使用 `AUTHORIZATION` 系统密钥 |
+| 聊天模型 | 默认 `auto`；动态列表见 `GET /v1/models` |
+| 图片模型 | 默认 `chatgpt-image-latest`；原生 `gpt-image-2` 默认禁用、需独立 Codex 授权 |
 
-调用示例，将占位符替换成本地 API Key：
+### 模型查询
+
+以下三个示例共用一组连接参数。运行在云服务器时，把 Base URL 换为后台显示的实际 HTTPS 公网地址；不要填写云服务器自己的 `127.0.0.1`。
 
 ```bash
-export CHAT2API_KEY='YOUR_LOCAL_API_KEY'
-curl -N http://127.0.0.1:5005/v1/chat/completions \
-  -H "Authorization: Bearer ${CHAT2API_KEY}" \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"auto","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+export CHAT2API_BASE_URL='http://127.0.0.1:5005/v1'
+export CHAT2API_API_KEY='YOUR_APPLICATION_KEY'
+curl "${CHAT2API_BASE_URL}/models" \
+  -H "Authorization: Bearer ${CHAT2API_API_KEY}"
 ```
 
-需要非流式响应时，将 `stream` 改为 `false`。本地 Key 用于选择 Token 池，继承的接口还允许直接传入上游凭据，因此不要把它当作完整的公网调用者权限系统。保持本机监听，并保持 `LOCAL_CONSOLE_ENABLED=true`；关闭本地控制台也会关闭它对旧 Token 管理路由的登录保护。
+返回 OpenAI `{"object":"list","data":[...]}` 结构。每个条目附带 `type`、`source`、`supported_endpoints`、`availability` 和说明；还可通过 `GET /v1/models/{id}` 查询单个条目。聊天目录来自一个可用账号的只读上游查询；没有账号或查询失败时仍返回 `auto` 和两个图片入口，不代表这些入口已获授权。不要在客户端写死某一次查询得到的 GPT 列表。
+
+### GPT 聊天
+
+```bash
+curl "${CHAT2API_BASE_URL}/chat/completions" \
+  -H "Authorization: Bearer ${CHAT2API_API_KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"auto","messages":[{"role":"user","content":"Hello"}],"stream":false}'
+```
+
+本机调用可将 `stream` 改为 `true` 并为 cURL 加上 `-N`；临时公网入口保持 `stream:false`。聊天模型可替换为目录中 `type:chat` 的标识，图片模型应调用下方图片接口。
+
+### 图片生成
+
+图片接口未指定 `model` 时默认使用网页桥接模型 `chatgpt-image-latest`；示例中显式写出名称，方便客户端区分通道。接口接收标准图片请求，内部使用普通 ChatGPT 会话并按 `image_gen` 额度调度；响应仅提供 `data[].b64_json`，由服务端下载完成的图片后编码返回，不把需要账号鉴权的上游图片地址交给外部客户端。普通会话可能在上游保留历史，网页生图结果不保证底层原生 Image2 身份。
+
+```bash
+curl "${CHAT2API_BASE_URL}/images/generations" \
+  -H "Authorization: Bearer ${CHAT2API_API_KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "chatgpt-image-latest",
+    "prompt": "生成一张简洁的蓝色圆形图案，白色背景。",
+    "n": 1,
+    "size": "auto",
+    "quality": "auto",
+    "output_format": "png",
+    "response_format": "b64_json"
+  }'
+```
+
+| 参数 / 行为 | `chatgpt-image-latest` 网页生图 | `gpt-image-2` 原生通道 |
+| --- | --- | --- |
+| 当前入口 | 网页桥接；实际能力取决于账号 | 默认禁用，需独立 Codex 授权；未宣称已验证成功 |
+| `n` | 仅 `1` | 仅 `1` |
+| `size` | 仅 `auto` | `auto` 或接口校验通过的分辨率 |
+| `quality` | 仅 `auto` | `auto` / `low` / `medium` / `high` |
+| `background` | 仅 `auto` | `auto` / `opaque` / `transparent` |
+| `output_format` | 仅 `png` | `png` / `jpeg` / `webp` |
+| `response_format` | 仅 `b64_json` | 仅 `b64_json` |
+| 额度 | 网页 `reason` + `image_gen` | Codex 权限与额度独立，不读取或扣减网页额度 |
+
+原生通道需要显式请求 `model:"gpt-image-2"`，并明确配置 `CODEX_NATIVE_IMAGES_ENABLED=true` 后才尝试；开关本身不会授予账号权限。未启用时返回 `403 unsupported_credentials`，不占用网页额度预留，也不计生成请求。原生失败不会静默切换成网页生图。不要为了让网页生图可用而打开原生开关。
+
+客户端可使用同一 API Key 分别发送聊天与图片请求。不要自动重放超时的生成请求，以免重复执行。图片响应需在调用方解码 `b64_json` 后显示或保存；标准 Images 接口不支持 `response_format:"url"`。
+
+主服务保持本机监听，并保持 `LOCAL_CONSOLE_ENABLED=true`；关闭本地控制台也会关闭它对旧 Token 管理路由的登录保护。外部客户端使用上面的独立公网网关。
 
 ## Docker 部署
 
@@ -319,6 +371,7 @@ docker compose down
 | `SCHEDULED_REFRESH` | `false` | 关闭继承的 Refresh Token 定时刷新流程；不会自动更新导入的 Access Token |
 | `API_PREFIX` | 留空 | API 路径前缀；本地测试台建议保持留空 |
 | `ENABLE_GATEWAY` | `false` | 关闭继承的网页网关功能 |
+| `CODEX_NATIVE_IMAGES_ENABLED` | `false` | 默认关闭独立原生 Image2 通道；网页生图不依赖此开关，开启也不授予 Codex 权限 |
 | `LOCAL_CONSOLE_ENABLED` | `true` | 启用本地登录、测试台及 Token 管理路由保护 |
 | `LOCAL_QUOTA_AUTO_REFRESH_SECONDS` | `300` | 正常额度快照的刷新间隔秒数；到期或待确认状态可提前刷新，`0` 停用后台请求，非零最小 60 秒 |
 | `LOCAL_CONSOLE_USERNAME` | `admin` | 管理员用户名 |

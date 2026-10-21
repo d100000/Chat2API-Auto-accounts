@@ -78,6 +78,24 @@
 .connection-dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-5); }
 .connection-key-dialog .notice { margin-top: var(--space-3); }
 .connection-example-heading .field-hint { margin-top: var(--space-1); }
+.connection-catalog { grid-column: 1 / -1; }
+.connection-catalog h2 { display: flex; align-items: center; gap: var(--space-2); }
+.connection-catalog-search { margin: 0; width: min(100%, var(--connection-model-width)); }
+.connection-catalog-scroll { max-height: var(--connection-code-height); overflow: auto; }
+.connection-model-table { width: 100%; border-collapse: collapse; text-align: left; font-size: var(--type-xs); }
+.connection-model-table th { position: sticky; top: 0; z-index: 1; padding: var(--space-3) var(--panel-padding); background: var(--color-subtle); color: var(--color-muted); font-weight: 450; }
+.connection-model-table td { padding: var(--space-4) var(--panel-padding); border-top: 1px solid var(--color-border); vertical-align: top; }
+.connection-model-identity { width: 45%; }
+.connection-model-identity > code { color: var(--color-text); font-size: var(--type-sm); }
+.connection-model-table .field-hint { margin-top: var(--space-1); }
+.connection-model-type { font-weight: 550; }
+.connection-model-action { text-align: right; white-space: nowrap; }
+.connection-model-action .button { min-height: 32px; padding: var(--space-1) var(--space-2); font-size: var(--type-xs); }
+.connection-example-kind { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-4); padding: var(--space-4) var(--panel-padding) 0; }
+.connection-image-options { display: flex; align-items: center; gap: var(--space-3); margin: 0; min-width: 0; }
+.connection-image-options label { margin: 0; white-space: nowrap; font-size: var(--type-xs); }
+.connection-image-options select { width: auto; min-width: 0; max-width: 100%; font-family: var(--font-mono); font-size: var(--type-xs); }
+.connection-image-note { margin: 0 var(--panel-padding) var(--space-4); font-size: var(--type-xs); }
 .connection-example-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-4); padding: var(--space-4) var(--panel-padding); }
 .connection-tabs { display: inline-flex; flex-shrink: 0; padding: var(--space-1); background: var(--color-subtle); border: 1px solid var(--color-border); border-radius: var(--radius-md); gap: var(--space-1); }
 .connection-tab { min-height: var(--button-height); padding: var(--space-2) var(--space-4); background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm); font-size: var(--type-sm); color: var(--color-muted); transition: color var(--motion-fast), background-color var(--motion-fast), border-color var(--motion-fast); }
@@ -111,5 +129,18 @@
   .connection-keys-table .connection-key-actions { display: flex; justify-content: flex-end; align-self: end; gap: var(--space-1); }
   .connection-keys-table .connection-key-actions::before { display: none; }
   .connection-key-actions .button { min-height: var(--button-height); }
+  .connection-catalog-search { width: 100%; }
+  .connection-model-table, .connection-model-table tbody { display: block; }
+  .connection-model-table thead { display: none; }
+  .connection-model-table tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); padding: var(--space-4) var(--panel-padding); border-bottom: 1px solid var(--color-border); }
+  .connection-model-table td { display: block; width: auto; padding: 0; border: 0; }
+  .connection-model-identity { grid-column: 1 / -1; }
+  .connection-model-endpoint { grid-column: 1 / -1; grid-row: 3; }
+  .connection-model-action { align-self: end; }
+  .connection-model-action .button { min-height: var(--button-height); }
+  .connection-image-options { width: 100%; flex-wrap: wrap; gap: var(--space-2); }
+  .connection-image-options select { width: 100%; }
+  .connection-example-kind > .connection-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); width: 100%; }
+  .connection-example-kind .connection-tab { padding-inline: var(--space-2); font-size: var(--type-xs); }
 }
 @media (max-width: 480px) { .connection-create-form { flex-direction: column; align-items: stretch; } .connection-create-form .field { width: 100%; } .connection-key-control { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; } .connection-key-control .button { padding-inline: var(--space-3); } .connection-panel-heading { padding-block: var(--space-4); } .connection-model-field .connection-control { max-width: none; } .connection-key-actions .button { padding-inline: var(--space-2); } }

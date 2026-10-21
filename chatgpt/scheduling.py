@@ -152,6 +152,8 @@ async def run_request(process, data, token):
             return await process(data, token, lease=lease)
         except HTTPException as error:
             if not getattr(error, "account_retry_safe", False) or attempt + 1 >= maximum:
+                if getattr(error, "safe_api_error", False):
+                    raise
                 raise HTTPException(error.status_code if error.status_code >= 400 else 502,
                                     {"code": "upstream_request_failed", "message": "上游请求未成功，请查看账号调度状态后重试。"}) from None
     raise HTTPException(503, "No available account")

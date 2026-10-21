@@ -47,7 +47,7 @@
     if (example.auth) lines.push(`  -H 'Authorization: Bearer ${example.auth}'`);
     if (example.encoding === 'form') {
       Object.entries(example.body).forEach(([name, value]) => lines.push(`  --data-urlencode '${name}=${value}'`));
-    } else {
+    } else if (example.body !== undefined) {
       lines.push("  -H 'Content-Type: application/json'", `  -d '${JSON.stringify(example.body, null, 2)}'`);
     }
     return lines.join(' \\\n');

@@ -61,6 +61,18 @@ class FeaturesConsoleTests(unittest.TestCase):
         self.assertNotIn('temperature', examples[0]['body'])
         self.assertTrue(any('未实现' in value for value in data['boundaries']))
 
+    def test_model_and_image_examples_distinguish_native_permissions(self):
+        data = self.module.feature_catalog(SimpleNamespace(api_prefix='proxy/test'))
+        models = next(item for item in data['examples'] if item['method'] == 'GET')
+        self.assertEqual(models['path'], '/proxy/test/v1/models')
+        self.assertNotIn('body', models)
+        images = [item for item in data['examples'] if item['path'].endswith('/images/generations')]
+        self.assertEqual([item['body']['model'] for item in images], ['chatgpt-image-latest', 'gpt-image-2'])
+        self.assertTrue(all(item['body']['n'] == 1 and item['body']['response_format'] == 'b64_json' for item in images))
+        self.assertIn('不保证原生 Image2 身份', images[0]['note'])
+        self.assertIn('尚未验证成功', images[1]['note'])
+        self.assertTrue(any(item['id'] == 'models' for item in data['capabilities']))
+
     def test_unsafe_prefix_cannot_create_external_management_links(self):
         data = self.module.feature_catalog(SimpleNamespace(api_prefix='https://example.invalid/'))
         self.assertEqual(data['management'][1]['href'], '/tokens')

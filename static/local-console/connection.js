@@ -3,7 +3,7 @@
 
   const byId = (id) => document.getElementById(id);
   const controls = Object.fromEntries(['refresh', 'copy-base', 'copy-public', 'reveal-key', 'copy-key', 'copy-model', 'copy-example', 'retry', 'logout'].map((name) => [name, byId(`connection-${name}`)]));
-  let state = {loading: false, keyPending: false, expired: false, data: null, example: 'cloud', revealed: false, retryAction: null, section: 'overview', keys: [], keysLoaded: false, keysLoading: false, keysBusy: false, systemKey: null, revokeTarget: null};
+  let state = {loading: false, keyPending: false, expired: false, data: null, example: 'cloud', kind: 'chat', imageModel: 'chatgpt-image-latest', revealed: false, retryAction: null, section: 'overview', keys: [], keysLoaded: false, keysLoading: false, keysBusy: false, systemKey: null, revokeTarget: null};
   let revealTimer;
 
   function hideKey() {
@@ -23,6 +23,9 @@
     controls['copy-public'].disabled = unavailable || !publicBase();
     controls['copy-model'].disabled = unavailable;
     controls['copy-example'].disabled = unavailable;
+    byId('connection-model-search').disabled = unavailable;
+    byId('connection-catalog-title').closest('section').setAttribute('aria-busy', String(state.loading));
+    for (const button of byId('connection-model-rows').querySelectorAll('button')) button.disabled = unavailable;
     for (const name of ['reveal-key', 'copy-key']) controls[name].disabled = unavailable || state.keyPending || !state.data?.key_configured;
     controls.retry.disabled = state.loading || state.keyPending || state.expired;
     byId('connection-parameters').setAttribute('aria-busy', String(state.loading));
@@ -75,20 +78,66 @@
   function exampleText() {
     const local = state.example === 'local';
     const base = local ? state.data?.base_url : publicBase();
-    const quotedBase = `'${(base || '').replaceAll("'", "'\\''")}'`;
-    const prefix = local ? `# 仅在运行 Chat2API 的这台 Mac 上执行\nexport CHAT2API_BASE_URL=${quotedBase}\n` : base ? `# 临时公网入口：Mac、本地服务与隧道须持续在线\nexport CHAT2API_BASE_URL=${quotedBase}\n` : '# 先设置 CHAT2API_BASE_URL 为已部署的 HTTPS 公网 Base URL\n# 地址以 /v1 结尾；当前本机地址不能从云服务器访问\n';
-    return `${prefix}# 将 CHAT2API_API_KEY 设置为有效的应用密钥或系统密钥\ncurl ${local ? '-N ' : ''}"\${CHAT2API_BASE_URL}/chat/completions" \\\n  -H "Authorization: Bearer \${CHAT2API_API_KEY}" \\\n  -H "Content-Type: application/json" \\\n  -d '{\n    "model": "auto",\n    "messages": [{"role": "user", "content": "请只回复 OK。"}],\n    "stream": ${local ? 'true' : 'false'}\n  }'`;
+    const quotedBase = "'" + (base || '').replaceAll("'", "'\\''") + "'";
+    const prefix = local ? '# 仅在运行 Chat2API 的这台 Mac 上执行\nexport CHAT2API_BASE_URL=' + quotedBase + '\n' : base ? '# 临时公网入口：Mac、本地服务与隧道须持续在线\nexport CHAT2API_BASE_URL=' + quotedBase + '\n' : '# 先设置 CHAT2API_BASE_URL 为已部署的 HTTPS 公网 Base URL\n# 地址以 /v1 结尾；当前本机地址不能从云服务器访问\n';
+    const auth = '# 将 CHAT2API_API_KEY 设置为有效的应用密钥或系统密钥\n';
+    const header = '  -H "Authorization: Bearer $' + '{CHAT2API_API_KEY}"';
+    const root = '"$' + '{CHAT2API_BASE_URL}/';
+    if (state.kind === 'models') return prefix + auth + ['curl ' + root + 'models"', header].join(' \\\n');
+    const images = state.kind === 'images';
+    const streaming = !images && (local || state.data?.public_streaming === true);
+    const endpoint = images ? 'images/generations' : 'chat/completions';
+    const body = images ? {model: state.imageModel, prompt: '生成一张简洁的蓝色圆形图案，白色背景。', n: 1, size: 'auto', quality: 'auto', output_format: 'png', response_format: 'b64_json'} : {model: 'auto', messages: [{role: 'user', content: '请只回复 OK。'}], stream: streaming};
+    return prefix + auth + ['curl ' + (streaming ? '-N ' : '') + root + endpoint + '"', header, '  -H "Content-Type: application/json"', "  -d '" + JSON.stringify(body, null, 2) + "'"].join(' \\\n');
   }
 
   function renderExample() {
     byId('connection-curl').textContent = exampleText();
-    byId('connection-example-panel').setAttribute('aria-labelledby', `connection-${state.example}-tab`);
-    byId('connection-example-hint').textContent = state.example === 'local' ? '本机示例使用流式响应，仅适用于运行服务的这台 Mac。' : publicBase() ? '当前临时公网入口使用非流式响应（stream: false）。' : '先设置 CHAT2API_BASE_URL 为已部署的 HTTPS 公网 Base URL。';
+    byId('connection-example-panel').setAttribute('aria-labelledby', 'connection-kind-' + state.kind + ' connection-' + state.example + '-tab');
+    const endpoints = {models: 'GET /v1/models', chat: 'POST /v1/chat/completions', images: 'POST /v1/images/generations'};
+    byId('connection-example-endpoint').textContent = endpoints[state.kind] + ' · Bearer 认证';
+    const local = state.example === 'local';
+    const streamHint = state.data?.public_streaming === true ? '流式响应（stream: true）' : '非流式响应（stream: false）';
+    byId('connection-example-hint').textContent = local ? (state.kind === 'chat' ? '本机示例使用流式响应，仅适用于运行服务的这台 Mac。' : '仅适用于运行服务的这台 Mac；接口返回完整 JSON。') : publicBase() ? (state.kind === 'chat' ? '公网聊天使用' + streamHint + '。' : '通过当前 HTTPS 公网入口调用，返回完整 JSON。') : '先设置 CHAT2API_BASE_URL 为已部署的 HTTPS 公网 Base URL。';
+    const images = state.kind === 'images';
+    byId('connection-image-options').hidden = !images;
+    byId('connection-image-note').hidden = !images;
+    byId('connection-image-note').textContent = state.imageModel === 'chatgpt-image-latest' ? '网页生图通过 ChatGPT 会话生成，实际可用性取决于账号；不保证底层原生 Image2 身份。固定 n=1、PNG，size / quality / background 仅 auto，仅返回 b64_json，请在调用方解码显示或保存。会话会启用历史。' : '原生 gpt-image-2 默认未启用，需要独立 Codex 授权，当前尚未验证成功。固定 n=1，仅返回 b64_json；支持 auto 或合规分辨率、auto / low / medium / high 质量及 PNG / JPEG / WebP。网页账号能聊天不代表能使用此模型。';
+    for (const tab of document.querySelectorAll('[data-kind]')) {
+      const selected = tab.dataset.kind === state.kind;
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+    }
     for (const tab of document.querySelectorAll('[data-example]')) {
       const selected = tab.dataset.example === state.example;
       tab.setAttribute('aria-selected', String(selected));
       tab.tabIndex = selected ? 0 : -1;
     }
+  }
+
+  function renderCatalog() {
+    const rows = state.data?.model_catalog?.data;
+    const models = Array.isArray(rows) ? rows.filter((model) => model && typeof model.id === 'string' && model.id.length <= 100 && ['chat', 'image'].includes(model.type)) : [];
+    const query = byId('connection-model-search').value.trim().toLowerCase();
+    const visible = models.filter((model) => model.id.toLowerCase().includes(query));
+    byId('connection-model-count').textContent = query ? visible.length + ' / ' + models.length : String(models.length);
+    byId('connection-model-loading').hidden = true;
+    byId('connection-model-empty').hidden = visible.length > 0;
+    byId('connection-model-empty').textContent = models.length ? '没有匹配的模型，请调整搜索内容。' : '模型目录暂不可用，请刷新信息重试。';
+    byId('connection-model-table-wrap').hidden = !visible.length;
+    byId('connection-model-rows').replaceChildren(...visible.map((model) => {
+      const row = node('tr');
+      const identity = node('td', 'connection-model-identity'); identity.dataset.label = '模型';
+      identity.append(node('code', '', model.id), node('p', 'field-hint', model.description || '可用性取决于账号。'));
+      const source = node('td'); source.dataset.label = '类型与来源';
+      source.append(node('span', 'connection-model-type', model.type === 'image' ? '图片' : '聊天'), node('p', 'field-hint', model.source === 'codex_images' ? 'Codex 图片权限' : 'ChatGPT 网页'));
+      const endpoint = node('td', 'connection-model-endpoint'); endpoint.dataset.label = '接口';
+      endpoint.append(node('code', '', model.type === 'image' ? '/v1/images/generations' : '/v1/chat/completions'));
+      const action = node('td', 'connection-model-action');
+      const copy = node('button', 'button button-quiet', '复制名称'); copy.type = 'button'; copy.setAttribute('aria-label', '复制模型 ' + model.id);
+      copy.addEventListener('click', () => window.ConsoleUI.copyText(model.id, copy));
+      action.append(copy); row.append(identity, source, endpoint, action); return row;
+    }));
   }
 
   async function loadConnection() {
@@ -112,13 +161,16 @@
       byId('connection-public-status').dataset.state = publicUrl ? 'running' : 'stopped';
       byId('connection-public-intro').textContent = publicUrl ? '使用下方 HTTPS 地址连接当前账号池。' : '当前服务仅在这台 Mac 上可访问。';
       byId('connection-public-description').textContent = publicUrl ? '该地址通过临时隧道连接本机 API，云服务器可以使用这里创建的应用密钥。' : '云服务器上的 127.0.0.1 指向云服务器自身，不能直接连接这台 Mac。';
-      byId('connection-public-hint').textContent = publicUrl ? '仅转发模型列表与聊天接口。当前隧道不提供流式响应。' : '需要先启动 HTTPS 公网入口，再刷新此页获取实际地址。';
+      byId('connection-public-hint').textContent = publicUrl ? '转发模型查询、聊天与图片生成接口，统一使用这里管理的 API Key。' : '需要先启动 HTTPS 公网入口，再刷新此页获取实际地址。';
+      byId('connection-public-streaming').textContent = data.public_streaming === true ? '支持流式 stream: true' : '非流式 stream: false';
       hideKey();
+      renderCatalog();
       renderExample();
     } catch (error) {
       if (!state.expired) {
         byId('connection-status').dataset.state = 'error';
         byId('connection-status-text').textContent = '连接信息读取失败';
+        if (!state.data) byId('connection-model-loading').textContent = '目录读取失败，请点击上方「重试」。';
         showError(error.name === 'AbortError' ? '读取连接信息超时，请重试。' : '无法读取连接信息，请检查本地服务后重试。', loadConnection);
       }
     } finally {
@@ -178,6 +230,11 @@
     }
     if (focus) byId(`connection-section-${section}`).focus();
     if (section !== 'overview') hideKey();
+  }
+
+  function selectAnchor() {
+    const sections = {'#overview': 'overview', '#keys': 'keys', '#api-key-management': 'keys', '#examples': 'examples'};
+    if (sections[window.location.hash]) switchSection(sections[window.location.hash]);
   }
 
   function updateKeyControls() {
@@ -376,6 +433,11 @@
   controls['copy-model'].addEventListener('click', () => window.ConsoleUI.copyText(state.data?.default_model || 'auto', controls['copy-model']));
   controls['copy-example'].addEventListener('click', () => window.ConsoleUI.copyText(exampleText(), controls['copy-example']));
   byId('connection-open-keys').addEventListener('click', () => switchSection('keys', true));
+  byId('connection-model-search').addEventListener('input', renderCatalog);
+  byId('connection-image-model').addEventListener('change', (event) => {
+    if (!['chatgpt-image-latest', 'gpt-image-2'].includes(event.target.value)) return;
+    state = {...state, imageModel: event.target.value}; renderExample();
+  });
   byId('connection-create-form').addEventListener('submit', createKey);
   byId('connection-keys-refresh').addEventListener('click', () => loadKeys());
   byId('connection-keys-retry').addEventListener('click', () => loadKeys());
@@ -419,6 +481,17 @@
       byId(`connection-${example}-tab`).focus();
     });
   }
+  const kinds = ['models', 'chat', 'images'];
+  for (const tab of document.querySelectorAll('[data-kind]')) {
+    tab.addEventListener('click', () => { state = {...state, kind: tab.dataset.kind}; renderExample(); });
+    tab.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      event.preventDefault();
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? kinds.length - 1 : (kinds.indexOf(state.kind) + (event.key === 'ArrowRight' ? 1 : kinds.length - 1)) % kinds.length;
+      state = {...state, kind: kinds[next]}; renderExample();
+      byId(`connection-kind-${state.kind}`).focus();
+    });
+  }
   controls.logout.addEventListener('click', async () => {
     hideKey();
     controls.logout.disabled = true;
@@ -437,6 +510,8 @@
     event.returnValue = '';
   });
   window.addEventListener('pagehide', () => { hideKey(); closeCreatedKey(); });
+  window.addEventListener('hashchange', selectAnchor);
+  selectAnchor();
   loadConnection();
   loadKeys();
 })();
