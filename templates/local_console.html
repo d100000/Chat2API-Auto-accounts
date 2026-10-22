@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="/static/local-console/console.css?v=20261021g">
   <link rel="stylesheet" href="/static/local-console/playground.css?v=20261021g">
   <script src="/static/local-console/ui.js?v=20261021g" defer></script>
-  <script src="/static/local-console/console.js?v=20261021g" defer></script>
+  <script src="/static/local-console/console.js?v=20261022c" defer></script>
 </head>
 <body class="console-page">
   <a class="skip-link" href="#prompt">跳到消息输入</a>
@@ -26,7 +26,7 @@
     <div class="console-layout">
       <aside class="settings-panel" aria-label="测试配置">
         <details id="request-options" class="request-options" open>
-          <summary><span class="request-options-title"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9m4 0h3M4 17h3m4 0h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>请求参数</span><span id="configuration-summary" class="configuration-summary">对话 · auto · 流式</span><span class="details-chevron" aria-hidden="true">⌄</span></summary>
+          <summary><span class="request-options-title"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9m4 0h3M4 17h3m4 0h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>请求参数</span><span id="configuration-summary" class="configuration-summary">对话 · gpt-6-luna · 流式</span><span class="details-chevron" aria-hidden="true">⌄</span></summary>
           <div class="request-options-body">
             <section class="settings-section" aria-labelledby="settings-title">
               <h2 id="settings-title" class="sr-only">请求配置</h2>
@@ -39,10 +39,10 @@
                 <select id="request-mode" aria-label="测试模式" hidden tabindex="-1"><option value="text">文本 / 图文对话</option><option value="image">对话生图</option></select>
                 <p id="request-mode-hint" class="field-hint">均通过 Chat Completions 接口请求。</p>
               </div>
-              <div class="field"><label for="model">模型</label><input id="model" name="model" value="auto" spellcheck="false" autocomplete="off" maxlength="100" required aria-describedby="model-hint"><p id="model-hint" class="field-hint">auto 由上游选择模型，也可输入 GPT ID。</p></div>
+              <div class="field"><label for="model">模型</label><input id="model" name="model" value="gpt-6-luna" list="chat-model-options" spellcheck="false" autocomplete="off" maxlength="100" required aria-describedby="model-hint"><datalist id="chat-model-options"><option value="gpt-6-luna">默认聊天模型</option><option value="auto">由上游自动选择</option></datalist><p id="model-hint" class="field-hint">默认 gpt-6-luna，也可选 auto 或输入其他聊天模型 ID；实际可用性以账号为准。</p></div>
               <label class="toggle-field" for="stream"><span><span class="field-label">流式响应</span><span class="field-hint">逐段查看返回内容</span></span><input id="stream" type="checkbox" role="switch" checked><span class="toggle-track" aria-hidden="true"></span></label>
               <div class="field history-field"><label for="history-mode">上游历史模式</label><select id="history-mode" aria-describedby="history-hint"><option value="default">沿用服务配置</option><option value="true">临时会话</option><option value="false">普通会话 · 可能保留历史</option></select><p id="history-hint" class="field-hint">不影响当前页面内的多轮上下文。</p></div>
-              <p id="image-mode-note" class="mode-note" hidden>已选择普通会话，上游可能保留历史。生图请求同时检查大模型与生图额度，实际结果由上游决定。</p>
+              <p id="image-mode-note" class="mode-note" hidden>此处为网页对话生图，使用聊天模型和普通会话，上游可能保留历史。原生 gpt-image-2 请通过 API 接入页的图片生成示例调用；该模型不能发送到聊天接口。</p>
               <details id="advanced-options" class="advanced-options">
                 <summary>更多选项<span class="advanced-summary-hint">图片 · 提示词 · Token</span></summary>
                 <div class="advanced-options-body">

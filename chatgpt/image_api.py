@@ -10,6 +10,8 @@ from urllib.parse import urlsplit
 from fastapi import HTTPException
 from PIL import Image
 
+from chatgpt.model_catalog import DEFAULT_IMAGE_MODEL
+
 
 IMAGE_MODELS = frozenset(("gpt-image-2", "chatgpt-image-latest"))
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -29,7 +31,7 @@ def validate_image_request(value):
                "background", "stream", "user", "safety_identifier"}
     if set(value) - allowed:
         invalid("Unsupported image parameter: " + sorted(set(value) - allowed)[0])
-    model = value.get("model", "chatgpt-image-latest")
+    model = value.get("model", DEFAULT_IMAGE_MODEL)
     if not isinstance(model, str) or model not in IMAGE_MODELS:
         invalid("Use gpt-image-2 or chatgpt-image-latest at the Images endpoint.", "model", "model_not_found", 404)
     prompt = value.get("prompt")

@@ -17,6 +17,8 @@
   let sessionReady = false;
   let refreshing = false;
   let requestSequence = 0;
+  let selectedMode = 'text';
+  let previousChatModel = ui.model.value.trim() || 'gpt-6-luna';
 
   byId('shortcut-label').textContent = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘ Enter' : 'Ctrl + Enter';
   // Narrow screens start with the native disclosure collapsed. Reopen it when
@@ -316,6 +318,13 @@
 
   function selectMode() {
     const image = ui['request-mode'].value === 'image';
+    if (image && selectedMode !== 'image') {
+      previousChatModel = ui.model.value.trim() || 'gpt-6-luna';
+      ui.model.value = 'auto';
+    } else if (!image && selectedMode === 'image') {
+      ui.model.value = previousChatModel;
+    }
+    selectedMode = image ? 'image' : 'text';
     ui['image-mode-note'].hidden = !image;
     if (image) { ui['history-mode'].value = 'false'; ui['advanced-options'].open = true; }
     ui.prompt.placeholder = image ? '描述要生成的画面，例如：请生成一张蓝色圆形图案…' : '输入消息，开始测试…';
@@ -328,7 +337,8 @@
     const model = ui.model.value.trim();
     const maxTokens = Number(ui['max-tokens'].value);
     if (!prompt) { ui.prompt.focus(); return; }
-    if (!model) { invalidConfiguration(ui.model, '请输入模型名称，例如 auto。'); return; }
+    if (!model) { invalidConfiguration(ui.model, '请输入聊天模型名称，例如 gpt-6-luna 或 auto。'); return; }
+    if (['gpt-image-2', 'chatgpt-image-latest'].includes(model)) { invalidConfiguration(ui.model, '该图片模型使用 /v1/images/generations，不能发送到聊天接口。请到 API 接入页查看图片生成示例，或改用 gpt-6-luna / auto 测试对话。'); return; }
     if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 4096) { invalidConfiguration(ui['max-tokens'], '最大输出 Token 需要是 1–4096 的整数。'); return; }
     const imageUrl = ui['image-url'].value.trim();
     if (imageUrl && !httpUrl(imageUrl)) { invalidConfiguration(ui['image-url'], '图片地址需要是有效的 HTTP(S) URL，不能包含用户名或密码。'); return; }

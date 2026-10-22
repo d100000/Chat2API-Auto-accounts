@@ -371,9 +371,15 @@ class LocalConsoleHTTPTests(unittest.TestCase):
         catalog = self.client.get(self.base + "/v1/models", headers=headers).json()
         self.assertEqual(catalog["object"], "list")
         by_id = {row["id"]: row for row in catalog["data"]}
+        self.assertEqual(list(by_id), ["gpt-6-luna", "auto", "gpt-image-2"])
         self.assertEqual(by_id["auto"]["type"], "chat")
         self.assertEqual(by_id["gpt-image-2"]["type"], "image")
-        self.assertIn("chatgpt-image-latest", by_id)
+        self.assertEqual(by_id["gpt-6-luna"]["availability"], "unavailable")
+        connection = self.client.get(self.base + "/local-console/connection").json()
+        self.assertEqual(connection["default_model"], "gpt-6-luna")
+        self.assertEqual(connection["default_image_model"], "gpt-image-2")
+        self.assertEqual([row["id"] for row in connection["model_catalog"]["data"]], list(by_id))
+        self.assertEqual(self.client.get(self.base + "/local-console/session").json()["default_model"], "gpt-6-luna")
         detail = self.client.get(self.base + "/v1/models/gpt-image-2", headers=headers)
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(detail.json(), by_id["gpt-image-2"])
@@ -389,11 +395,20 @@ class LocalConsoleHTTPTests(unittest.TestCase):
         self.assertEqual(bad.json()["error"]["param"], "n")
         row = next(row for row in self.client.get(endpoint).json()["keys"] if row["id"] == created["key"]["id"])
         self.assertEqual(row["request_count"], 0)
+        # Defaults must not silently use auto or web images. No account or
+        # native permission is fabricated merely because a preset is listed.
+        response = self.client.post(self.base + "/v1/chat/completions", headers=headers,
+            json={"messages": [{"role": "user", "content": "Offline only"}]})
+        self.assertEqual(response.status_code, 429)
+        response = self.client.post(self.base + "/v1/images/generations", headers=headers,
+            json={"prompt": "Offline only"})
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()["error"]["code"], "unsupported_credentials")
         response = self.client.post(self.base + "/v1/images/generations", headers=headers,
             json={"model": "chatgpt-image-latest", "prompt": "Offline only"})
         self.assertEqual(response.status_code, 429)
         row = next(row for row in self.client.get(endpoint).json()["keys"] if row["id"] == created["key"]["id"])
-        self.assertEqual(row["request_count"], 1)
+        self.assertEqual(row["request_count"], 2)
         self.client.patch(endpoint + "/" + created["key"]["id"], json={"status": "disabled"})
         self.assertEqual(self.client.post(self.base + "/v1/images/generations", headers=headers, json={"prompt": "Offline"}).status_code, 401)
         self.client.delete(endpoint + "/" + created["key"]["id"])

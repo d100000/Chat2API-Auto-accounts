@@ -142,7 +142,8 @@ class ChatService:
         await get_dpl(self)
 
     async def set_model(self):
-        self.origin_model = self.data.get("model", "gpt-3.5-turbo-0125")
+        from chatgpt.model_catalog import DEFAULT_CHAT_MODEL
+        self.origin_model = self.data.get("model", DEFAULT_CHAT_MODEL)
         self.resp_model = model_proxy.get(self.origin_model, self.origin_model)
         if self.origin_model.startswith(("gizmo-g-", "g-")):
             self.gizmo_id = "g-" + self.origin_model.split("g-")[-1]

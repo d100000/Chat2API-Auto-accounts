@@ -29,6 +29,9 @@ MAX_ACCOUNTS = 2000
 REFRESH_CONCURRENCY = 2
 REFRESH_SPACING = 0.25
 CHANNEL = "chatgpt_web"
+DEFAULT_CHAT_MODEL = "gpt-6-luna"
+DEFAULT_IMAGE_MODEL = "gpt-image-2"
+DEFAULT_MODELS = (DEFAULT_CHAT_MODEL, "auto", DEFAULT_IMAGE_MODEL)
 _MAX_CACHE_BYTES = 8 * 1024 * 1024
 _ACCOUNT_ID = re.compile(r"acct_[0-9a-f]{24}\Z")
 _CHECK_STATES = {"unverified", "verified", "denied", "error", "model_mismatch"}
@@ -467,6 +470,20 @@ class ModelCatalog:
         self._schedule(now, groups)
         return self._result(now, groups)
 
+    async def get_default_catalog(self):
+        """Curated client defaults, separate from discovered routing evidence."""
+        catalog = await self.get_catalog()
+        discovered = {row["id"]: row for row in catalog["data"]}
+        data = []
+        for identifier in DEFAULT_MODELS:
+            row = discovered.get(identifier, _model(identifier))
+            if identifier == DEFAULT_CHAT_MODEL and not any(
+                    row.get("meta", {}).get(key, 0) for key in ("directory_accounts", "verified_accounts")):
+                row = {**row, "availability": "unavailable", "verification": "unverified",
+                       "description": "默认聊天模型；当前账号池尚无有效可用证据，请刷新模型目录或核查账号权限。"}
+            data.append(row)
+        return {**catalog, "data": data}
+
     async def _refresh_one(self, key, group, semaphore):
         async with semaphore:
             async with self._start_lock:
@@ -563,6 +580,10 @@ _catalog = ModelCatalog()
 
 async def get_catalog():
     return await _catalog.get_catalog()
+
+
+async def get_default_catalog():
+    return await _catalog.get_default_catalog()
 
 
 async def find_model(identifier):

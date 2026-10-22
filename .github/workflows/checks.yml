@@ -22,6 +22,7 @@ jobs:
           for file in static/local-console/*.js; do node --check "$file"; done
           node tests/test_dashboard_ui.cjs
           node tests/test_connection_ui.cjs
+          node tests/test_playground_models_ui.cjs
           node tests/test_account_concurrency_ui.cjs
           node tests/test_account_columns_ui.cjs
           node tests/test_tokens_concurrency_ui.cjs

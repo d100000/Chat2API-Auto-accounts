@@ -6,6 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app import app, templates
 from api.local_console import current_session, require_session
+from chatgpt.model_catalog import DEFAULT_CHAT_MODEL
 import utils.configs as configs
 
 
@@ -21,7 +22,7 @@ def feature_catalog(settings):
         {"id": "chat", "title": "文本对话与流式响应", "state": "implemented", "description": "Chat Completions 支持 SSE 逐段输出和完整 JSON 响应。", "href": "/playground", "action": "打开聊天测试", "condition": "需要可用账号和 API Key；上游可用性以请求结果为准。"},
         {"id": "multimodal", "title": "图片与文件输入", "state": "implemented", "description": "messages 支持 text / image_url 内容数组；图片和文件由服务上传到 ChatGPT。", "href": "/playground", "action": "测试图文输入", "condition": "测试台提供 HTTP(S) 图片 URL；API 还支持 data URL。文件类型和处理能力取决于上游。"},
         {"id": "images", "title": "标准图片生成接口", "state": "implemented", "description": "Images API 支持网页生图桥接与原生 Image2 两条路径，与聊天共用 API Key。", "href": "/connection#examples", "action": "查看图片调用", "condition": "chatgpt-image-latest 使用网页会话并启用历史，不保证原生 Image2 身份；gpt-image-2 默认未启用，需要独立 Codex 授权，当前尚未验证成功。"},
-        {"id": "models", "title": "动态模型目录", "state": "implemented", "description": "查询真实聊天模型标识、图片模型、类型、来源与可调用接口。", "href": "/connection", "action": "查看模型目录", "condition": "只读查询一个可用账号，缓存 5 分钟；失败最多保留 24 小时旧目录。列出模型不保证整个账号池均有权限。"},
+        {"id": "models", "title": "默认模型目录", "state": "implemented", "description": "默认展示 gpt-6-luna、auto、gpt-image-2，以及类型、来源与对应接口。", "href": "/connection", "action": "查看模型目录", "condition": "后台保留完整账号能力发现结果，缓存 5 分钟，失败最多保留 24 小时旧值。默认列出不授予账号权限，原生 Image2 需要独立 Codex 授权。"},
         {"id": "context", "title": "多轮上下文", "state": "implemented", "description": "账号池通过完整 messages 传递上下文；本地测试台自动携带已成功的轮次。", "href": "/playground", "action": "测试多轮对话", "condition": "已有 conversation_id / parent_message_id 仅可配合对应账号直接凭据使用，不能跨账号池调度。"},
         {"id": "gpts-model", "title": "GPTs 自定义助手", "state": "implemented", "description": "model 可填写 g- 开头的 GPT ID，进入源码中的 gizmo_interaction 模式。", "href": "/playground", "action": "输入 GPT ID 测试", "condition": "对应账号必须具有该 GPT 的访问权限；此功能不要求打开网页网关。"},
         {"id": "tools", "title": "网页工具与附件结果", "state": "conditional", "description": "解析上游产生的图片、文件、代码执行和引用结果，作为聊天内容返回。", "href": "#api-examples", "action": "查看接口边界", "condition": "具体工具由上游选择；没有实现 OpenAI tools / tool_calls 函数调用协议。"},
@@ -48,9 +49,9 @@ def feature_catalog(settings):
     ]
     configuration = [{"name": name, "enabled": getattr(settings, attr, False) is True, "description": description} for name, attr, description in config_specs]
     examples = [
-        {"title": "流式 / 完整聊天", "method": "POST", "path": chat_path, "auth": "YOUR_API_KEY", "body": {"model": "auto", "messages": [{"role": "user", "content": "请只回复 OK。"}], "stream": True}, "note": "stream=true 返回 SSE；改为 false 返回完整 JSON。临时公网入口不支持流式时应设为 false。"},
+        {"title": "流式 / 完整聊天", "method": "POST", "path": chat_path, "auth": "YOUR_API_KEY", "body": {"model": DEFAULT_CHAT_MODEL, "messages": [{"role": "user", "content": "请只回复 OK。"}], "stream": True}, "note": "stream=true 返回 SSE；改为 false 返回完整 JSON。临时公网入口不支持流式时应设为 false。"},
         {"title": "原有对话生图", "method": "POST", "path": chat_path, "auth": "YOUR_API_KEY", "body": {"model": "auto", "quota_feature": "image_gen", "history_disabled": False, "messages": [{"role": "user", "content": "请生成一张蓝色圆形图案。"}], "stream": False}, "note": "原有 Chat Completions 生图仍保留；需要标准图片响应结构时使用 /v1/images/generations。普通会话可能在上游保留历史。"},
-        {"title": "图文输入", "method": "POST", "path": chat_path, "auth": "YOUR_API_KEY", "body": {"model": "auto", "messages": [{"role": "user", "content": [{"type": "text", "text": "描述这张图片。"}, {"type": "image_url", "image_url": {"url": "https://example.com/your-image.png", "detail": "auto"}}]}], "stream": False}, "note": "将示例 URL 替换为你有权发送且服务可访问的图片地址。"},
+        {"title": "图文输入", "method": "POST", "path": chat_path, "auth": "YOUR_API_KEY", "body": {"model": DEFAULT_CHAT_MODEL, "messages": [{"role": "user", "content": [{"type": "text", "text": "描述这张图片。"}, {"type": "image_url", "image_url": {"url": "https://example.com/your-image.png", "detail": "auto"}}]}], "stream": False}, "note": "将示例 URL 替换为你有权发送且服务可访问的图片地址。"},
         {"title": "继续指定账号的上游会话", "method": "POST", "path": chat_path, "auth": "ACCOUNT_ACCESS_TOKEN", "body": {"model": "auto", "history_disabled": False, "conversation_id": "YOUR_CONVERSATION_ID", "parent_message_id": "YOUR_PARENT_MESSAGE_ID", "messages": [{"role": "user", "content": "继续。"}], "stream": True}, "note": "必须使用原账号的直接凭据与真实会话 ID。共享 Key 账号池会拒绝这组参数。"},
         {"title": "注册固定 Seed", "method": "POST", "path": "/seedtoken", "auth": "SYSTEM_API_KEY", "body": {"seed": "YOUR_SEED", "token": "ACCOUNT_ACCESS_TOKEN"}, "note": "需要 ENABLE_GATEWAY=true，仅接受 .env 系统密钥，不接受应用密钥。切换 AUTO_SEED=false 后，聊天接口以 YOUR_SEED 作为 Bearer；seed 不是聊天请求体参数。"},
         {"title": "刷新账号访问凭据", "method": "POST", "path": "/auth/refresh", "auth": None, "encoding": "form", "body": {"refresh_token": "YOUR_REFRESH_TOKEN"}, "note": "需要 ENABLE_GATEWAY=true；原接口的请求格式由 gateway/share.py 保留。不要在不可信网络传输 RefreshToken。"},

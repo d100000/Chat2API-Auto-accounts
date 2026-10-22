@@ -17,14 +17,14 @@ ChatGPT 网页接口 → JSON / SSE 聊天响应或标准图片响应
 ## 已实现的功能
 
 - **聊天接口**：`POST /v1/chat/completions`，支持流式 SSE 和非流式 JSON 响应。
-- **图片接口**：`POST /v1/images/generations`，默认用 `chatgpt-image-latest` 将网页生图转换为标准图片响应，按网页生图额度选账号。另保留原生 `gpt-image-2` 独立通道，默认禁用，需另行具备 Codex 授权。
+- **图片接口**：`POST /v1/images/generations`，默认模型为原生 `gpt-image-2`，该通道需独立 Codex 授权，默认未启用。可显式使用 `chatgpt-image-latest`，将网页生图转换为标准图片响应并按网页生图额度选账号。
 - **额度调度**：使用本地 API Key 调用账号池时，优先选择额度充足的账号；区分大模型和生图额度，耗尽后切换，重置后经查询确认再加入可用池。
 - **Token 池**：从文件或管理页面导入凭据，合并可识别的同账号 Token，并排除已记录的异常或过期凭据。
 - **本地管理登录**：使用用户名和 PBKDF2 密码哈希登录，保护测试台和 Token 管理入口。
 - **浏览器测试台**：发送消息、临时多轮对话、切换流式响应、查看 HTTP 状态、耗时和首字时间。页面会显示本地 Token 数量与异常标记数量。
 - **图片测试**：测试台支持图片 URL 输入和原有聊天生图模式；API 接入页提供标准图片接口示例。网页生图启用会话历史，实际输出取决于上游账号能力。
 - **API 密钥管理**：按用途创建独立应用密钥、停用、恢复和撤销，查看最近使用时间与累计受理次数，以及近 30 天 API 等价估值、未估值条数、图片请求和生成张数；密钥明文只在创建时返回一次，数据库只存摘要。
-- **API 接入与模型目录**：复制本机或临时公网 Base URL，查询真实聊天模型标识和两种图片模型，查看模型查询、GPT 聊天、图片生成三类 cURL 示例；目录标明类型、来源与对应接口。
+- **API 接入与模型目录**：复制本机或临时公网 Base URL，默认公开 `gpt-6-luna`、`auto`、`gpt-image-2`，查看模型查询、GPT 聊天、图片生成三类 cURL 示例；目录标明类型、来源、授权状态与对应接口。
 - **原功能入口**：统一展示原网页网关、GPTs、Seed 管理、Token 刷新与运行配置；保留继承路由，明确显示是否启用和调用条件。
 - **账号与额度**：查看 ChatGPT 网页返回的大模型 `reason`、生图 `image_gen` 剩余量、重置时间，以及其他功能和模型限制；支持单账号或全部账号刷新。
 - **调度状态**：查看各能力是否可选、执行中的请求、等待刷新或冷却的原因，以及最近的账号选择、切换、耗尽和恢复事件。
@@ -37,7 +37,7 @@ ChatGPT 网页接口 → JSON / SSE 聊天响应或标准图片响应
 
 ## 使用边界
 
-- 聊天建议先使用 `model: "auto"`，或从 `GET /v1/models` 读取当前聊天模型标识。目录中的原生聊天标识直接发送上游；响应里的 `model` 标签不能独立证明底层模型身份，也不保证所有账号均有权限。
+- 聊天默认使用 `model: "gpt-6-luna"`，也可显式使用 `auto` 由上游选择。聊天标识按原名发送上游；默认列出不等于账号已获权限，响应里的 `model` 标签也不能独立证明底层模型身份。
 - 已提供模型查询、Chat Completions 和 Images Generations；**没有实现 `/v1/images/edits` 或 `/v1/responses` 路由**。网页图片模型 `chatgpt-image-latest` 不保证底层原生 Image2 身份。`gpt-image-2` 默认禁用，需要独立 Codex 授权，当前没有宣称已验证原生调用成功；也不会失败后自动改用网页生图。
 - 额度页面展示查询时的上游快照，调度器另行记录本地预留。未返回的额度保持未知，不能用本地调用次数推算官方余额，也不提供“无限使用”能力。
 - 测试台的聊天记录只存在于当前页面，刷新或退出后清空。`max_tokens` / `max_completion_tokens` 在本地限制返回文本长度，不代表能控制网页上游的计算量或额度消耗。
@@ -221,7 +221,7 @@ python scripts/public_service.py stop
 
 这些数据文件均保存在私有 `data/` 目录，文件权限为 `0600`。额度缓存与调度状态只使用匿名账号标识；调度状态和用量账本不保存 Token、提示词、回复正文、图片 URL 或原始错误正文。不要把运行时 `data/` 提交到仓库。
 
-模型目录由 `chatgpt/model_catalog.py` 维护，私密缓存位于 `data/model_catalog.json`，按匿名账号与通道分别保存经过校验的模型标识、查询状态及时间。公开 `/v1/models` 汇总可路由条目，不暴露账号身份；查询直接读取缓存，后台最多并发 2、每账号两次尝试至少间隔 60 秒。正常目录缓存 5 分钟，失败保留最长 24 小时的上次成功结果；过期或错误凭据不会放行现代模型请求。
+模型目录由 `chatgpt/model_catalog.py` 维护，私密缓存位于 `data/model_catalog.json`，按匿名账号与通道分别保存经过校验的模型标识、查询状态及时间。公开 `/v1/models` 只投影三个默认模型，不暴露账号身份；后台仍保留完整发现结果，用于账号能力筛选和已有模型的显式调用。查询直接读取缓存，后台最多并发 2、每账号两次尝试至少间隔 60 秒。正常目录缓存 5 分钟，失败保留最长 24 小时的上次成功结果；过期或错误凭据不会放行现代模型请求。
 
 账号页分别展示目录发现与 `gpt-6-luna` 调用核查证据。内部管理员核查只向指定账号发送一次固定短提示词，受账号额度和并发限制，每账号至少间隔 60 秒，不重试、不改写模型、不自动切换账号。只有实际发送与上游报告都精确为 `gpt-6-luna` 才记为调用一致；HTTP 200 但报告其他模型会显示不一致，不能当作 Luna 可用。核查记录不包含回复正文，超过 24 小时显示过期。上游报告仍不构成底层模型身份的独立证明。
 
@@ -306,8 +306,8 @@ python scripts/public_service.py stop
 | API 类型 | OpenAI Chat Completions / Images Generations |
 | Base URL | `http://127.0.0.1:5005/v1` |
 | API Key | 在「API 接入与密钥」创建应用密钥，或使用 `AUTHORIZATION` 系统密钥 |
-| 聊天模型 | 默认 `auto`；动态列表见 `GET /v1/models` |
-| 图片模型 | 默认 `chatgpt-image-latest`；原生 `gpt-image-2` 默认禁用、需独立 Codex 授权 |
+| 聊天模型 | 默认 `gpt-6-luna`，也支持 `auto` |
+| 图片模型 | 默认 `gpt-image-2`，需独立 Codex 授权；网页生图显式填写 `chatgpt-image-latest` |
 
 ### 模型查询
 
@@ -320,7 +320,7 @@ curl "${CHAT2API_BASE_URL}/models" \
   -H "Authorization: Bearer ${CHAT2API_API_KEY}"
 ```
 
-返回 OpenAI `{"object":"list","data":[...]}` 结构。每个条目附带 `type`、`source`、`supported_endpoints`、`availability` 和说明；还可通过 `GET /v1/models/{id}` 查询单个条目。聊天目录来自一个可用账号的只读上游查询；没有账号或查询失败时仍返回 `auto` 和两个图片入口，不代表这些入口已获授权。不要在客户端写死某一次查询得到的 GPT 列表。
+返回 OpenAI `{"object":"list","data":[...]}` 结构，固定按 `gpt-6-luna`、`auto`、`gpt-image-2` 顺序返回。每个条目附带 `type`、`source`、`supported_endpoints`、`availability` 和说明；还可通过 `GET /v1/models/{id}` 查询这三个条目。Luna 没有有效账号能力证据时标为 `unavailable`，原生图片标为 `requires_codex_authorization`；默认目录不授予账号权限，也不会把 Luna 改写成其他模型。账号详情仍保留完整上游模型发现与核查记录。
 
 ### GPT 聊天
 
@@ -328,7 +328,7 @@ curl "${CHAT2API_BASE_URL}/models" \
 curl "${CHAT2API_BASE_URL}/chat/completions" \
   -H "Authorization: Bearer ${CHAT2API_API_KEY}" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"auto","messages":[{"role":"user","content":"Hello"}],"stream":false}'
+  -d '{"model":"gpt-6-luna","messages":[{"role":"user","content":"Hello"}],"stream":false}'
 ```
 
 本机调用可将 `stream` 改为 `true` 并为 cURL 加上 `-N`；临时公网入口保持 `stream:false`。聊天模型可替换为目录中 `type:chat` 的标识，图片模型应调用下方图片接口。
@@ -341,14 +341,16 @@ curl "${CHAT2API_BASE_URL}/chat/completions" \
 
 ### 图片生成
 
-图片接口未指定 `model` 时默认使用网页桥接模型 `chatgpt-image-latest`；示例中显式写出名称，方便客户端区分通道。接口接收标准图片请求，内部使用普通 ChatGPT 会话并按 `image_gen` 额度调度；响应仅提供 `data[].b64_json`，由服务端下载完成的图片后编码返回，不把需要账号鉴权的上游图片地址交给外部客户端。普通会话可能在上游保留历史，网页生图结果不保证底层原生 Image2 身份。
+图片接口未指定 `model` 时默认使用原生 `gpt-image-2`。该通道仍要求启用 `CODEX_NATIVE_IMAGES_ENABLED` 并配置实际可用的 Codex 授权；当前未启用时明确返回 `403 unsupported_credentials`。
+
+已有网页生图使用显式 `model:"chatgpt-image-latest"`，也可在 API 接入页选择网页生图示例。它通过普通 ChatGPT 会话按 `image_gen` 额度调度，响应只提供 `data[].b64_json`；普通会话可能在上游保留历史，结果不保证底层原生 Image2 身份。
 
 ```bash
 curl "${CHAT2API_BASE_URL}/images/generations" \
   -H "Authorization: Bearer ${CHAT2API_API_KEY}" \
   -H 'Content-Type: application/json' \
   -d '{
-    "model": "chatgpt-image-latest",
+    "model": "gpt-image-2",
     "prompt": "生成一张简洁的蓝色圆形图案，白色背景。",
     "n": 1,
     "size": "auto",
@@ -369,7 +371,7 @@ curl "${CHAT2API_BASE_URL}/images/generations" \
 | `response_format` | 仅 `b64_json` | 仅 `b64_json` |
 | 额度 | 网页 `reason` + `image_gen` | Codex 权限与额度独立，不读取或扣减网页额度 |
 
-原生通道需要显式请求 `model:"gpt-image-2"`，并明确配置 `CODEX_NATIVE_IMAGES_ENABLED=true` 后才尝试；开关本身不会授予账号权限。未启用时返回 `403 unsupported_credentials`，不占用网页额度预留，也不计生成请求。原生失败不会静默切换成网页生图。不要为了让网页生图可用而打开原生开关。
+原生通道接受显式 `model:"gpt-image-2"`，省略图片模型时也使用该默认值；只有明确配置 `CODEX_NATIVE_IMAGES_ENABLED=true` 后才尝试，开关本身不会授予账号权限。未启用时返回 `403 unsupported_credentials`，不占用网页额度预留，也不计生成请求。原生失败不会静默切换成网页生图。不要为了让网页生图可用而打开原生开关。
 
 客户端可使用同一 API Key 分别发送聊天与图片请求。不要自动重放超时的生成请求，以免重复执行。图片响应需在调用方解码 `b64_json` 后显示或保存；标准 Images 接口不支持 `response_format:"url"`。
 
@@ -430,6 +432,7 @@ docker compose down
 python -m unittest discover -s tests -p 'test_*.py' -v
 node tests/test_dashboard_ui.cjs
 node tests/test_connection_ui.cjs
+node tests/test_playground_models_ui.cjs
 node tests/test_account_concurrency_ui.cjs
 node tests/test_account_columns_ui.cjs
 node tests/test_tokens_concurrency_ui.cjs

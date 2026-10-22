@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from pathlib import Path
 import re
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from PIL import Image
@@ -26,7 +27,7 @@ class ImageValidationTests(unittest.TestCase):
         self.assertEqual(converted["model"], "chatgpt-image-latest")
         self.assertEqual(converted["quota_feature"], "image_gen")
         self.assertFalse(converted["history_disabled"])
-        self.assertEqual(validate_image_request({"prompt": "A circle"})["model"], "chatgpt-image-latest")
+        self.assertEqual(validate_image_request({"prompt": "A circle"})["model"], "gpt-image-2")
 
     def test_rejects_unsupported_work_before_generation(self):
         for change in ({"n": 2}, {"n": True}, {"stream": True}, {"prompt": " "}, {"model": "gpt-6"},
@@ -80,6 +81,25 @@ class WebImageBridgeTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ModelRoutingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_validation_uses_full_discovery_beyond_public_defaults(self):
+        source = Path(__file__).resolve().parents[1] / "api/chat2api.py"
+        tree = ast.parse(source.read_text())
+        method = next(node for node in tree.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "validate_chat_model")
+        namespace = {"re": re, "HTTPException": HTTPException, "IMAGE_MODELS": {"gpt-image-2", "chatgpt-image-latest"}}
+        exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
+        full = AsyncMock(return_value={"data": [{"id": "auto", "type": "chat"}, {"id": "gpt-6", "type": "chat"}]})
+        with patch("chatgpt.model_catalog.get_catalog", full):
+            self.assertEqual((await namespace["validate_chat_model"]({}))["model"], "gpt-6-luna")
+            full.assert_not_called()
+            for model in ("gpt-6-luna", "auto", "gpt-6", "gpt-4", "g-custom"):
+                self.assertEqual((await namespace["validate_chat_model"]({"model": model}))["model"], model)
+            with self.assertRaises(HTTPException) as context:
+                await namespace["validate_chat_model"]({"model": "gpt-nonexistent"})
+            self.assertEqual(context.exception.status_code, 404)
+            with self.assertRaises(HTTPException) as context:
+                await namespace["validate_chat_model"]({"model": "gpt-image-2"})
+            self.assertEqual(context.exception.status_code, 400)
+
     async def test_real_slugs_and_image_bridge_never_fall_back_to_gpt4o(self):
         source = Path(__file__).resolve().parents[1] / "chatgpt/ChatService.py"
         tree = ast.parse(source.read_text())
@@ -87,10 +107,11 @@ class ModelRoutingTests(unittest.IsolatedAsyncioTestCase):
         method = next(node for node in cls.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "set_model")
         namespace = {"re": re, "HTTPException": HTTPException, "model_proxy": {}}
         exec(compile(ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[])), str(source), "exec"), namespace)
-        for model, expected in (("gpt-6", "gpt-6"), ("gpt-5-6", "gpt-5-6"), ("o4-mini", "o4-mini"),
+        for model, expected in ((None, "gpt-6-luna"), ("auto", "auto"), ("gpt-6-luna", "gpt-6-luna"),
+                                ("gpt-6", "gpt-6"), ("gpt-5-6", "gpt-5-6"), ("o4-mini", "o4-mini"),
                                 ("gpt-5-thinking-mini", "gpt-5-thinking-mini"), ("gpt-4.1-mini", "gpt-4.1-mini"), ("o3-pro", "o3-pro"),
                                 ("chatgpt-image-latest", "auto"), ("g-my-custom-gpt", "auto")):
-            service = SimpleNamespace(data={"model": model})
+            service = SimpleNamespace(data={"model": model} if model is not None else {})
             await namespace["set_model"](service)
             self.assertEqual(service.req_model, expected)
         for model in ("gpt-image-2", "unknown-model", "claude-3-opus"):

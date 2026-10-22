@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from chatgpt.model_catalog import (CACHE_TTL, MAX_STALE, RETRY_AFTER, CatalogReadError,
-                                  ModelCatalog, _default_token_source, _fetch_models, is_chat_model_id)
+                                  DEFAULT_MODELS, ModelCatalog, _default_token_source, _fetch_models, is_chat_model_id)
 
 
 NOW = 1800000000
@@ -112,6 +112,45 @@ class ModelCatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[B]["checks"]["gpt-6-luna"]["status"], "unverified")
         self.assertEqual(rows[B]["status"], "fresh")
         self.assertEqual(result["data"][-1]["availability"], "requires_codex_authorization")
+
+    async def test_default_catalog_has_exact_order_without_granting_account_access(self):
+        self.tokens = []
+        result = await self.service.get_default_catalog()
+        self.assertEqual(ids(result), list(DEFAULT_MODELS))
+        self.assertEqual(ids(result), ["gpt-6-luna", "auto", "gpt-image-2"])
+        self.assertEqual(result["data"][0]["availability"], "unavailable")
+        self.assertEqual(result["data"][0]["verification"], "unverified")
+        self.assertEqual(result["data"][2]["availability"], "requires_codex_authorization")
+        self.assertFalse(self.service.account_supports_model(A, "gpt-6-luna"))
+        self.assertEqual(self.calls, [])
+
+    async def test_default_projection_preserves_full_discovery_and_evidence(self):
+        await self.service.refresh_catalog()
+        public = await self.service.get_default_catalog()
+        self.assertEqual(ids(public), list(DEFAULT_MODELS))
+        self.assertEqual(public["data"][0]["verification"], "directory_visible")
+        self.assertEqual(public["data"][0]["meta"]["directory_accounts"], 1)
+        self.assertEqual(public["data"][0]["source"], "chatgpt_web")
+        self.assertEqual(public["data"][2]["source"], "codex_images")
+        full = await self.service.get_catalog()
+        self.assertIn("gpt-6", ids(full))
+        self.assertIn("chatgpt-image-latest", ids(full))
+        self.assertTrue(self.service.account_supports_model(A, "gpt-6"))
+        self.assertTrue(self.service.account_supports_model(B, "gpt-6-luna"))
+        for secret in [*self.tokens, A, B, "fingerprint"]:
+            self.assertNotIn(secret, json.dumps(public))
+
+    async def test_denied_or_stale_luna_stays_listed_but_not_schedulable(self):
+        await self.service.refresh_catalog()
+        self.service.record_model_check(B, "gpt-6-luna", "denied", sent_model="gpt-6-luna", http_status=403)
+        public = await self.service.get_default_catalog()
+        self.assertEqual(public["data"][0]["availability"], "unavailable")
+        self.assertFalse(self.service.account_supports_model(B, "gpt-6-luna"))
+        self.now += MAX_STALE + 1
+        public = await self.service.get_default_catalog()
+        self.assertEqual(public["data"][0]["availability"], "unavailable")
+        self.assertFalse(self.service.account_supports_model(B, "gpt-6-luna"))
+        await self.settle()
 
     async def test_safe_slugs_only_and_no_alias_invention(self):
         accepted = ["gpt-6", "gpt-6-luna", "gpt-6-6luna", "gpt-5-6", "gpt-4.1", "o1", "o3-mini", "o4-mini"]

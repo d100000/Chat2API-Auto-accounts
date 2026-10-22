@@ -3,7 +3,7 @@
 
   const byId = (id) => document.getElementById(id);
   const controls = Object.fromEntries(['refresh', 'copy-base', 'copy-public', 'reveal-key', 'copy-key', 'copy-model', 'copy-example', 'retry', 'logout'].map((name) => [name, byId(`connection-${name}`)]));
-  let state = {loading: false, keyPending: false, expired: false, data: null, example: 'cloud', kind: 'chat', imageModel: 'chatgpt-image-latest', revealed: false, retryAction: null, section: 'overview', keys: [], keyUsage: {}, usageDays: 30, usageSince: null, usageStatus: 'ok', keysLoaded: false, keysLoading: false, keysBusy: false, systemKey: null, revokeTarget: null};
+  let state = {loading: false, keyPending: false, expired: false, data: null, example: 'cloud', kind: 'chat', imageModel: 'gpt-image-2', imageModelChosen: false, revealed: false, retryAction: null, section: 'overview', keys: [], keyUsage: {}, usageDays: 30, usageSince: null, usageStatus: 'ok', keysLoaded: false, keysLoading: false, keysBusy: false, systemKey: null, revokeTarget: null};
   let revealTimer;
 
   function hideKey() {
@@ -75,6 +75,11 @@
     return state.data?.public_status === 'running' && typeof state.data.public_base_url === 'string' && state.data.public_base_url.startsWith('https://') ? state.data.public_base_url : null;
   }
 
+  function defaultChatModel() {
+    const model = state.data?.default_model;
+    return typeof model === 'string' && /^(?:auto|gpt-[a-z0-9][a-z0-9._-]{0,95})$/.test(model) && !['gpt-image-2', 'chatgpt-image-latest'].includes(model) ? model : 'gpt-6-luna';
+  }
+
   function exampleText() {
     const local = state.example === 'local';
     const base = local ? state.data?.base_url : publicBase();
@@ -87,7 +92,7 @@
     const images = state.kind === 'images';
     const streaming = !images && (local || state.data?.public_streaming === true);
     const endpoint = images ? 'images/generations' : 'chat/completions';
-    const body = images ? {model: state.imageModel, prompt: '生成一张简洁的蓝色圆形图案，白色背景。', n: 1, size: 'auto', quality: 'auto', output_format: 'png', response_format: 'b64_json'} : {model: 'auto', messages: [{role: 'user', content: '请只回复 OK。'}], stream: streaming};
+    const body = images ? {model: state.imageModel, prompt: '生成一张简洁的蓝色圆形图案，白色背景。', n: 1, size: 'auto', quality: 'auto', output_format: 'png', response_format: 'b64_json'} : {model: defaultChatModel(), messages: [{role: 'user', content: '请只回复 OK。'}], stream: streaming};
     return prefix + auth + ['curl ' + (streaming ? '-N ' : '') + root + endpoint + '"', header, '  -H "Content-Type: application/json"', "  -d '" + JSON.stringify(body, null, 2) + "'"].join(' \\\n');
   }
 
@@ -101,8 +106,9 @@
     byId('connection-example-hint').textContent = local ? (state.kind === 'chat' ? '本机示例使用流式响应，仅适用于运行服务的这台 Mac。' : '仅适用于运行服务的这台 Mac；接口返回完整 JSON。') : publicBase() ? (state.kind === 'chat' ? '公网聊天使用' + streamHint + '。' : '通过当前 HTTPS 公网入口调用，返回完整 JSON。') : '先设置 CHAT2API_BASE_URL 为已部署的 HTTPS 公网 Base URL。';
     const images = state.kind === 'images';
     byId('connection-image-options').hidden = !images;
+    byId('connection-image-model').value = state.imageModel;
     byId('connection-image-note').hidden = !images;
-    byId('connection-image-note').textContent = state.imageModel === 'chatgpt-image-latest' ? '网页生图通过 ChatGPT 会话生成，实际可用性取决于账号；不保证底层原生 Image2 身份。固定 n=1、PNG，size / quality / background 仅 auto，仅返回 b64_json，请在调用方解码显示或保存。会话会启用历史。' : '原生 gpt-image-2 默认未启用，需要独立 Codex 授权，当前尚未验证成功。固定 n=1，仅返回 b64_json；支持 auto 或合规分辨率、auto / low / medium / high 质量及 PNG / JPEG / WebP。网页账号能聊天不代表能使用此模型。';
+    byId('connection-image-note').textContent = state.imageModel === 'chatgpt-image-latest' ? '网页生图通过 ChatGPT 会话生成，实际可用性取决于账号；不保证底层原生 Image2 身份。固定 n=1、PNG，size / quality / background 仅 auto，仅返回 b64_json，请在调用方解码显示或保存。会话会启用历史。' : '原生 gpt-image-2 需要独立 Codex 授权并启用；未授权或未启用时返回 403，默认列出不代表已经可用。固定 n=1，仅返回 b64_json；支持 auto 或合规分辨率、auto / low / medium / high 质量及 PNG / JPEG / WebP。网页账号能聊天不代表能使用此模型。';
     for (const tab of document.querySelectorAll('[data-kind]')) {
       const selected = tab.dataset.kind === state.kind;
       tab.setAttribute('aria-selected', String(selected));
@@ -149,9 +155,11 @@
     try {
       const data = await request('/local-console/connection');
       if (typeof data.base_url !== 'string' || !/^https?:\/\//.test(data.base_url) || typeof data.key_configured !== 'boolean') throw new Error('Invalid connection data');
-      state = {...state, data};
+      const imageModel = state.imageModelChosen ? state.imageModel : ['gpt-image-2', 'chatgpt-image-latest'].includes(data.default_image_model) ? data.default_image_model : 'gpt-image-2';
+      state = {...state, data, imageModel};
       byId('connection-base-url').value = data.base_url;
-      byId('connection-model').value = data.default_model || 'auto';
+      byId('connection-model').value = defaultChatModel();
+      byId('connection-public-model').textContent = defaultChatModel();
       byId('connection-status').dataset.state = data.key_configured ? 'ready' : 'error';
       byId('connection-status-text').textContent = data.key_configured ? '仅本机可访问' : '未配置共享密钥';
       byId('connection-key-hint').textContent = data.key_configured ? `系统密钥由 .env 中的 AUTHORIZATION 管理。${data.key_count > 1 ? '此处显示第一组系统密钥。' : '应用专用密钥请在「密钥管理」中创建。'}` : '请在服务环境变量 AUTHORIZATION 中配置系统密钥，重启服务后刷新。';
@@ -442,13 +450,13 @@
   controls['copy-key'].addEventListener('click', () => accessKey('copy'));
   controls['copy-base'].addEventListener('click', () => window.ConsoleUI.copyText(state.data?.base_url || '', controls['copy-base']));
   controls['copy-public'].addEventListener('click', () => { if (publicBase()) window.ConsoleUI.copyText(publicBase(), controls['copy-public']); });
-  controls['copy-model'].addEventListener('click', () => window.ConsoleUI.copyText(state.data?.default_model || 'auto', controls['copy-model']));
+  controls['copy-model'].addEventListener('click', () => window.ConsoleUI.copyText(defaultChatModel(), controls['copy-model']));
   controls['copy-example'].addEventListener('click', () => window.ConsoleUI.copyText(exampleText(), controls['copy-example']));
   byId('connection-open-keys').addEventListener('click', () => switchSection('keys', true));
   byId('connection-model-search').addEventListener('input', renderCatalog);
   byId('connection-image-model').addEventListener('change', (event) => {
     if (!['chatgpt-image-latest', 'gpt-image-2'].includes(event.target.value)) return;
-    state = {...state, imageModel: event.target.value}; renderExample();
+    state = {...state, imageModel: event.target.value, imageModelChosen: true}; renderExample();
   });
   byId('connection-create-form').addEventListener('submit', createKey);
   byId('connection-keys-refresh').addEventListener('click', () => loadKeys());

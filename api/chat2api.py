@@ -63,6 +63,7 @@ async def app_start():
 
 
 async def to_send_conversation(request_data, req_token, lease=None):
+    from chatgpt.model_catalog import DEFAULT_CHAT_MODEL
     chat_service = ChatService(req_token, selected_token=lease.token) if lease else ChatService(req_token)
     metrics = request_data.get("_request_metrics")
     if metrics is not None:
@@ -72,7 +73,7 @@ async def to_send_conversation(request_data, req_token, lease=None):
     # imported account this attempt will actually use.
     try:
         chat_service.usage_trace = await start_trace(
-            chat_service.req_token, request_data.get("model", "gpt-3.5-turbo-0125"),
+            chat_service.req_token, request_data.get("model", DEFAULT_CHAT_MODEL),
             request_data.get("Chatgpt-Account-Id"))
         if chat_service.usage_trace:
             chat_service.usage_trace.scheduled_feature = lease.feature if lease else "reason"
@@ -222,8 +223,8 @@ async def pool_key(token, *, record_use=False):
 @app.get(f"/{api_prefix}/v1/models" if api_prefix else "/v1/models")
 async def list_models(credentials: HTTPAuthorizationCredentials = Security(security_scheme)):
     await api_key_only(credentials.credentials)
-    from chatgpt.model_catalog import get_catalog
-    return await get_catalog()
+    from chatgpt.model_catalog import get_default_catalog
+    return await get_default_catalog()
 
 
 async def api_key_only(token, *, record_use=False):
@@ -239,8 +240,8 @@ async def api_key_only(token, *, record_use=False):
 @app.get(f"/{api_prefix}/v1/models/{{model_id}}" if api_prefix else "/v1/models/{model_id}")
 async def retrieve_model(model_id: str, credentials: HTTPAuthorizationCredentials = Security(security_scheme)):
     await api_key_only(credentials.credentials)
-    from chatgpt.model_catalog import get_catalog
-    catalog = await get_catalog()
+    from chatgpt.model_catalog import get_default_catalog
+    catalog = await get_default_catalog()
     model = next((row for row in catalog["data"] if row["id"] == model_id), None)
     if model is None:
         raise HTTPException(404, {"error": {"message": "Model is not in this account pool's catalog.",
@@ -249,20 +250,21 @@ async def retrieve_model(model_id: str, credentials: HTTPAuthorizationCredential
 
 
 async def validate_chat_model(data):
-    model = data.get("model", "auto")
+    from chatgpt.model_catalog import DEFAULT_CHAT_MODEL, get_catalog
+    model = data.get("model", DEFAULT_CHAT_MODEL)
     if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", model):
         raise HTTPException(400, "model must be a model identifier of at most 100 characters")
     if model in IMAGE_MODELS or "image" in model or model.startswith("dall-e"):
         raise HTTPException(400, {"error": {"message": "Use /v1/images/generations for image models.",
             "type": "invalid_request_error", "param": "model", "code": "model_endpoint_mismatch"}})
     from api.models import model_proxy
-    from chatgpt.model_catalog import get_catalog
-    # Retain inherited aliases and custom GPTs; current GPT slugs must come from
-    # model discovery, and unknown labels must never become GPT-4o silently.
+    # The configured default is a known identifier, not evidence of account
+    # access: the scheduler still checks each account's model support. Other
+    # modern slugs use full discovery, separate from the curated public list.
     legacy = {"gpt-4", "gpt-4-mobile", "gpt-4o-canmore", "o3", "o1", "o1-pro", "o3-mini-high", "o3-mini-medium", "o3-mini-low"} | {
         value for key, value in model_proxy.items() if key.startswith(("gpt-", "o1", "o3"))} | {
         key for key in model_proxy if key.startswith(("gpt-", "o1", "o3"))}
-    if model not in legacy and not model.startswith(("g-", "gizmo")):
+    if model != DEFAULT_CHAT_MODEL and model not in legacy and not model.startswith(("g-", "gizmo")):
         catalog = await get_catalog()
         if not any(row["id"] == model and row.get("type") == "chat" for row in catalog["data"]):
             raise HTTPException(404, {"error": {"message": "Unknown model. Query /v1/models for available identifiers.",

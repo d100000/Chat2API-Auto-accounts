@@ -126,7 +126,7 @@ class Message(BaseModel):
 
 
 class ChatBody(BaseModel):
-    model: str = Field(default="auto", min_length=1, max_length=100, pattern=r"\S")
+    model: str = Field(default=model_catalog.DEFAULT_CHAT_MODEL, min_length=1, max_length=100, pattern=r"\S")
     messages: list[Message] = Field(min_length=1, max_length=40)
     stream: bool = True
     max_tokens: int = Field(default=256, ge=1, le=4096)
@@ -256,9 +256,9 @@ async def connection_info(request: Request):
     keys = configs.authorization_list
     hint = (keys[0][:8] + "…" + keys[0][-4:]) if keys and len(keys[0]) > 16 else ("已配置" if keys else "未配置")
     public = await asyncio.to_thread(public_connection_info)
-    return {"base_url": base, "chat_url": base + "/chat/completions", "default_model": "auto",
+    return {"base_url": base, "chat_url": base + "/chat/completions", "default_model": model_catalog.DEFAULT_CHAT_MODEL,
             "models_url": base + "/models", "images_url": base + "/images/generations",
-            "default_image_model": "chatgpt-image-latest", "model_catalog": await model_catalog.get_catalog(),
+            "default_image_model": model_catalog.DEFAULT_IMAGE_MODEL, "model_catalog": await model_catalog.get_default_catalog(),
             "key_configured": bool(keys), "key_hint": hint, "key_count": len(keys),
             "access_scope": "loopback", **public}
 
@@ -357,7 +357,7 @@ async def session_info(request: Request):
     prefix = f"/{configs.api_prefix}" if configs.api_prefix else ""
     return {"username": USERNAME, "token_count": len(set(globals.token_list)),
             "error_token_count": len(set(globals.error_token_list)),
-            "default_model": "auto", "base_url": str(request.base_url).rstrip("/") + prefix + "/v1"}
+            "default_model": model_catalog.DEFAULT_CHAT_MODEL, "base_url": str(request.base_url).rstrip("/") + prefix + "/v1"}
 
 
 @app.post("/local-console/chat", include_in_schema=False)
