@@ -94,6 +94,8 @@ class NativeImagesTests(unittest.IsolatedAsyncioTestCase):
         self.trace.finish = AsyncMock(wraps=self.trace.finish)
         self.scheduler = types.SimpleNamespace(finish=AsyncMock())
         self.lease = types.SimpleNamespace(token=TOKEN, feature='image_gen')
+        self.native_lease = types.SimpleNamespace(token=TOKEN, feature='image_gen', quota_features=(), channel='codex_native')
+        self.scheduler.acquire_for_account = AsyncMock(return_value=self.native_lease)
         self.finish_calls = []
         # Execute the real shared cleanup function without importing app.py or .env.
         tree = ast.parse((ROOT / 'api/chat2api.py').read_text())
@@ -161,12 +163,26 @@ class NativeImagesTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_enabled_native_without_web_lease_never_debits_web_scheduler(self):
         service, result = await native.process_native_images(DATA, TOKEN)
-        self.assertIsNone(service.schedule_lease)
+        self.assertIs(service.schedule_lease, self.native_lease)
+        options = self.scheduler.acquire_for_account.call_args.kwargs
+        self.assertEqual(options['quota_mode'], 'none')
+        self.assertEqual(options['channel'], 'codex_native')
+        self.assertEqual(service.schedule_lease.quota_features, ())
         self.assertEqual(result['data'][0]['b64_json'], PNG)
-        self.assertEqual(self.scheduler.finish.await_count, 0)
+        self.assertEqual(self.scheduler.finish.await_count, 1)
         self.assertEqual(self.trace.finish.await_count, 1)
         self.assertEqual(self.session.closed, 1)
         self.assertEqual(len(self.finish_calls), 1)
+
+    async def test_native_capacity_full_stops_before_upstream_generation(self):
+        from chatgpt.account_scheduler import AccountConcurrencyExhausted
+        self.scheduler.acquire_for_account.side_effect = AccountConcurrencyExhausted('image_gen')
+        with self.assertRaises(HTTPException) as raised:
+            await native.process_native_images(DATA, TOKEN)
+        self.assertEqual(raised.exception.status_code, 429)
+        self.assertEqual(raised.exception.detail['error']['code'], 'account_concurrency_exhausted')
+        self.assertIn('Retry-After', raised.exception.headers)
+        self.assertFalse(self.session.calls)
 
     def test_unknown_native_enable_setting_fails_closed(self):
         for value in ('', 'false', '0', 'not-configured'):

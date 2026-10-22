@@ -69,6 +69,9 @@ def error_signal(value, status=None, feature="reason", now=None):
         rows += [child for row in tuple(rows) for key in ("error", "detail")
                  if isinstance((child := row.get(key)), dict) and child not in rows]
     codes = {row.get(key) for row in rows for key in ("code", "type") if isinstance(row.get(key), str)}
+    if codes & {"account_concurrency_exhausted", "concurrency_configuration_unavailable", "model_not_available", "account_pool_empty"}:
+        # Local admission failures are not upstream quota/rate-limit evidence.
+        return {"kind": "request"}
     explicit_feature = next((row.get(key) for row in rows for key in ("feature_name", "feature")
                              if isinstance(row.get(key), str) and row.get(key) in FEATURES), None)
     reset_at = next((stamp for row in rows for key in ("reset_at", "resets_at", "reset_after")
@@ -115,12 +118,39 @@ def failure(service, error):
 
 async def run_request(process, data, token):
     feature = request_feature(data)
+    from chatgpt.account_scheduler import (get_scheduler, NoAvailableAccount,
+        AccountConcurrencyExhausted, ModelNotAvailable)
+    from chatgpt.account_concurrency import ConcurrencyPersistenceError
+    scheduler = get_scheduler()
+    model = data.get("model")
+
+    def admission_error(error):
+        if isinstance(error, ModelNotAvailable):
+            return HTTPException(503, {"code": error.code, "message": "当前没有已确认支持此模型的账号，请刷新模型目录或选择 auto。"})
+        return HTTPException(429, {"code": error.code, "message": "当前账号并发已满，请等待正在运行的请求完成。"},
+                             headers={"Retry-After": str(error.retry_after_seconds)})
+
     if not pool_request(token):
-        return await process(data, token)
+        # Resolve a Seed/legacy pool selector exactly once. Passing the selected
+        # credential through a lease prevents ChatService from selecting again.
+        from chatgpt.authorization import get_req_token
+        selected = get_req_token(token)
+        if not isinstance(selected, str) or not selected.strip():
+            raise HTTPException(503, {"code": "account_pool_empty", "message": "没有可用账号凭据，请先导入有效账号。"})
+        try:
+            lease = await scheduler.acquire_for_account(selected, feature, model=model,
+                account_override=data.get("Chatgpt-Account-Id"))
+        except (AccountConcurrencyExhausted, ModelNotAvailable) as error:
+            raise admission_error(error) from None
+        except ConcurrencyPersistenceError:
+            raise HTTPException(503, {"code": "concurrency_configuration_unavailable", "message": "账号并发配置暂不可用。"}) from None
+        try:
+            return await process(data, token, lease=lease)
+        except BaseException as error:
+            await asyncio.shield(scheduler.finish(lease, status="cancelled" if isinstance(error, asyncio.CancelledError) else "failed"))
+            raise
     if any(data.get(key) is not None for key in ("conversation_id", "parent_message_id", "Chatgpt-Account-Id")):
         raise HTTPException(400, "账号池请求请传完整 messages；已有 conversation_id、parent_message_id 或工作区覆盖请使用该账号的直接凭据。")
-    from chatgpt.account_scheduler import get_scheduler, NoAvailableAccount
-    scheduler = get_scheduler()
     excluded = frozenset()
     try:
         maximum = max(1, min(10, int(os.environ.get("ACCOUNT_MAX_ATTEMPTS", "3"))))
@@ -129,13 +159,19 @@ async def run_request(process, data, token):
     refreshed = False
     for attempt in range(maximum):
         try:
-            lease = await scheduler.acquire(feature, excluded=excluded)
+            lease = await scheduler.acquire(feature, excluded=excluded, model=model)
+        except (AccountConcurrencyExhausted, ModelNotAvailable) as unavailable:
+            raise admission_error(unavailable) from None
+        except ConcurrencyPersistenceError:
+            raise HTTPException(503, {"code": "concurrency_configuration_unavailable", "message": "账号并发配置暂不可用。"}) from None
         except NoAvailableAccount as unavailable:
             if not refreshed:
                 await refresh_due(force=True)
                 refreshed = True
                 try:
-                    lease = await scheduler.acquire(feature, excluded=excluded)
+                    lease = await scheduler.acquire(feature, excluded=excluded, model=model)
+                except (AccountConcurrencyExhausted, ModelNotAvailable) as unavailable_after_refresh:
+                    raise admission_error(unavailable_after_refresh) from None
                 except NoAvailableAccount as unavailable_after_refresh:
                     unavailable = unavailable_after_refresh
                     lease = None
@@ -163,6 +199,7 @@ async def refresh_due(force=False, interval=300):
     from chatgpt import account_quota
     from chatgpt.account_scheduler import get_scheduler
     snapshot = account_quota.get_accounts()
+    await get_scheduler().synchronize_identities()
     routing = get_scheduler().snapshot(snapshot)
     now = time.time()
     selected = []
@@ -181,4 +218,5 @@ async def refresh_due(force=False, interval=300):
         if force or age >= interval or resets or needs_confirmation:
             selected.append(account["id"])
     await asyncio.gather(*(account_quota.refresh(identifier) for identifier in selected))
+    await get_scheduler().synchronize_identities()
     get_scheduler().snapshot(account_quota.get_accounts())

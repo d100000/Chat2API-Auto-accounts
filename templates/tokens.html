@@ -7,9 +7,9 @@
   <title>凭据管理 · Chat2API</title>
   <script src="/static/local-console/theme.js?v=20261021g"></script>
   <link rel="stylesheet" href="/static/local-console/console.css?v=20261021g">
-  <link rel="stylesheet" href="/static/local-console/tokens.css?v=20261021g">
+  <link rel="stylesheet" href="/static/local-console/tokens.css?v=20261022a">
   <script src="/static/local-console/ui.js?v=20261021g" defer></script>
-  <script src="/static/local-console/tokens.js?v=20261021g" defer></script>
+  <script src="/static/local-console/tokens.js?v=20261022a" defer></script>
 </head>
 <body class="tokens-page" data-api-prefix="{{ api_prefix or '' }}">
   <a class="skip-link" href="#token-input">跳到凭据输入</a>
@@ -34,6 +34,7 @@
       <button id="errorButton" class="button button-secondary" type="button" aria-controls="error-tokens-section" aria-expanded="false">查看错误凭据</button>
     </section>
 
+    <p id="tokens-import-result" class="tokens-import-result" hidden><a id="tokens-import-accounts" class="text-link" href="/accounts">查看本次导入的账号 →</a></p>
     <div class="tokens-layout">
       <section class="tokens-panel tokens-import" aria-labelledby="import-title">
         <header class="tokens-panel-header">
@@ -46,6 +47,7 @@
             <textarea id="token-input" name="text" rows="9" required spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off" aria-describedby="token-input-hint" placeholder="每行一条凭据，可批量粘贴"></textarea>
             <p id="token-input-hint" class="field-hint">自动忽略空行与 # 开头的注释。不要粘贴账号密码或整份账号 JSON。</p>
           </div>
+          <fieldset class="tokens-concurrency"><legend>导入账号的并发设置</legend><p class="field-hint">新账号默认继承系统设置。每项 1–10，已有账号的设置默认保留。</p><div class="tokens-concurrency-grid"><div class="field"><label for="token-reason-limit">大模型并发</label><select id="token-reason-limit" name="reason_limit"><option value="inherit">继承系统默认</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option></select></div><div class="field"><label for="token-image-limit">生图并发</label><select id="token-image-limit" name="image_gen_limit"><option value="inherit">继承系统默认</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option></select></div></div><label class="tokens-overwrite"><input id="token-overwrite-existing" type="checkbox" name="overwrite_existing" value="true"><span>也覆盖本次匹配到的已有账号设置</span></label><p id="token-overwrite-warning" class="field-hint" hidden>已有账号也会应用上方两项设置；选择“继承”会清除该账号的自定义值。</p></fieldset>
           <div class="tokens-submit-row"><p class="field-hint">失败时保留输入，方便检查后重试。</p><button id="token-upload" class="button button-primary" type="submit" disabled>导入凭据 <span aria-hidden="true">↑</span></button></div>
         </form>
         <footer class="tokens-storage-note"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 15v2"/></svg><p>凭据保存在本机 data 目录，输入内容不会写入浏览器存储。</p></footer>

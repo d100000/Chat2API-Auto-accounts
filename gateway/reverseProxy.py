@@ -166,6 +166,9 @@ async def content_generator(r, token, history=True):
 
 
 async def chatgpt_reverse_proxy(request: Request, path: str):
+    capacity = None
+    capacity_handed_off = False
+    owner = None
     try:
         origin_host = request.url.netloc
         if request.url.is_secure:
@@ -202,14 +205,17 @@ async def chatgpt_reverse_proxy(request: Request, path: str):
             base_url = "https://web-sandbox.oaiusercontent.com"
             path = path.replace("sandbox/", "")
 
-        token = headers.get("authorization", "").replace("Bearer ", "").strip()
+        token = headers.get("authorization", "").replace("Bearer ", "").strip() or request.cookies.get("token", "")
+        generation_token, generation_access = None, None
+        req_token = ""
         if token:
             req_token = await get_real_req_token(token)
             access_token = await verify_token(req_token)
+            generation_token, generation_access = req_token, access_token
             headers.update({"authorization": f"Bearer {access_token}"})
 
-        cookie_token = request.cookies.get("token", "")
-        req_token = await get_real_req_token(cookie_token)
+        # Authentication, fingerprint and admission use the same selected
+        # account. A cookie may not override an explicit Authorization header.
         fp = get_fp(req_token).copy()
 
         session_id = hashlib.md5(req_token.encode()).hexdigest()
@@ -218,6 +224,8 @@ async def chatgpt_reverse_proxy(request: Request, path: str):
         impersonate = fp.pop("impersonate", "safari15_3")
         user_agent = fp.get("user-agent")
         headers.update(fp)
+        if generation_access:
+            headers["authorization"] = f"Bearer {generation_access}"
 
         headers.update({
             "accept-language": "en-US,en;q=0.9",
@@ -236,6 +244,11 @@ async def chatgpt_reverse_proxy(request: Request, path: str):
                 })
 
         data = await request.body()
+        from chatgpt.gateway_capacity import admit_generation, GatewayCapacity
+        from utils.disconnect import run_connected
+        capacity = await admit_generation(request, path, generation_token, data, access=generation_access,
+            account_override=headers.get("chatgpt-account-id"))
+        owner = capacity or GatewayCapacity(None, None)
 
         history = True
         if path.endswith("backend-api/conversation") or path.endswith("backend-alt/conversation"):
@@ -258,9 +271,10 @@ async def chatgpt_reverse_proxy(request: Request, path: str):
             proxy_url = proxy_url.replace("{}", session_id) if proxy_url else None
             client = Client(proxy=proxy_url, impersonate=impersonate)
         try:
-            background = BackgroundTask(client.close)
-            r = await client.request(request.method, f"{base_url}/{path}", params=params, headers=headers,
-                                     cookies=request_cookies, data=data, stream=True, allow_redirects=False)
+            owner.bind_cleanup(client.close)
+            background = BackgroundTask(owner.finish)
+            r = await run_connected(request, client.request(request.method, f"{base_url}/{path}", params=params, headers=headers,
+                                     cookies=request_cookies, data=data, stream=True, allow_redirects=False))
             if r.status_code == 307 or r.status_code == 302 or r.status_code == 301:
                 return Response(status_code=307,
                                 headers={"Location": r.headers.get("Location")
@@ -269,26 +283,28 @@ async def chatgpt_reverse_proxy(request: Request, path: str):
                                 .replace("cdn.oaistatic.com", origin_host)
                                 .replace("https", petrol)}, background=background)
             elif 'stream' in r.headers.get("content-type", ""):
-                logger.info(f"Request token: {req_token}")
-                logger.info(f"Request proxy: {proxy_url}")
+                logger.info("Web proxy stream started with configured account.")
                 logger.info(f"Request UA: {user_agent}")
                 logger.info(f"Request impersonate: {impersonate}")
                 conv_key = r.cookies.get("conv_key", "")
-                response = StreamingResponse(content_generator(r, token, history), media_type=r.headers.get("content-type", ""),
+                source = content_generator(r, token, history)
+                source = owner.stream(source)
+                response = StreamingResponse(source, media_type=r.headers.get("content-type", ""),
                                   background=background)
                 response.set_cookie("conv_key", value=conv_key)
+                capacity_handed_off = True
                 return response
             elif 'image' in r.headers.get("content-type", "") or "audio" in r.headers.get("content-type", "") or "video" in r.headers.get("content-type", ""):
                 rheaders = dict(r.headers)
-                response = Response(content=await r.acontent(), headers=rheaders,
+                response = Response(content=await run_connected(request, r.acontent()), headers=rheaders,
                                         status_code=r.status_code, background=background)
                 return response
             else:
                 if path.endswith("backend-api/conversation") or path.endswith("backend-alt/conversation") or "/register-websocket" in path:
-                    response = Response(content=(await r.acontent()), media_type=r.headers.get("content-type"),
+                    response = Response(content=(await run_connected(request, r.acontent())), media_type=r.headers.get("content-type"),
                                         status_code=r.status_code, background=background)
                 else:
-                    content = await r.atext()
+                    content = await run_connected(request, r.atext())
                     if "public-api/" in path:
                         content = (content
                                    .replace("https://ab.chatgpt.com", f"{petrol}://{origin_host}")
@@ -323,9 +339,13 @@ async def chatgpt_reverse_proxy(request: Request, path: str):
                     response = Response(content=content, headers=rheaders,
                                         status_code=r.status_code, background=background)
                 return response
-        except Exception as e:
-            await client.close()
+        except Exception:
+            raise
     except HTTPException as e:
         raise e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.error("Web proxy request failed.")
+        raise HTTPException(status_code=502, detail="网页代理请求未完成，请稍后重试。") from None
+    finally:
+        if owner is not None and not capacity_handed_off:
+            await owner.finish()

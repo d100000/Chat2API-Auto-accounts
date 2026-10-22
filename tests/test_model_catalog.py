@@ -29,185 +29,309 @@ def ids(catalog):
     return [model["id"] for model in catalog["data"]]
 
 
+A = "acct_" + "a" * 24
+B = "acct_" + "b" * 24
+C = "acct_" + "c" * 24
+
+
 class ModelCatalogTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="model-catalog-test-")
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / "catalog.json"
         self.now = NOW
-        self.tokens = ["synthetic-private-token", "unused-second-token"]
+        self.tokens = ["private-a", "private-b"]
+        self.identities = {"private-a": A, "private-b": B, "private-a-rotated": A, "private-c": C}
         self.calls = []
-        self.reply = {"models": [{"slug": "auto"}, {"slug": "gpt-6"}, {"slug": "gpt-5-6"}]}
-        self.failure = None
+        self.replies = {"private-a": {"models": [{"slug": "gpt-6"}]},
+                        "private-b": {"models": [{"slug": "gpt-6-luna"}]}}
 
         async def fetch(value):
             self.calls.append(value)
-            if self.failure:
-                raise self.failure
-            return deepcopy(self.reply)
+            result = self.replies[value]
+            if isinstance(result, Exception):
+                raise result
+            return deepcopy(result)
 
         self.fetch = fetch
-        self.service = ModelCatalog(lambda: tuple(self.tokens), fetcher=fetch,
-                                    clock=lambda: self.now, cache_path=self.path)
+        self.service = self.create()
 
-    async def test_lazy_startup_and_openai_shape_always_include_safe_defaults(self):
-        self.assertFalse(self.path.exists())
-        self.assertEqual(self.calls, [])
-        self.tokens = []
-        result = await self.service.get_catalog()
-        self.assertEqual(result["object"], "list")
-        self.assertEqual(ids(result), ["auto", "chatgpt-image-latest", "gpt-image-2"])
-        self.assertEqual(self.calls, [])
-        image = result["data"][-1]
-        self.assertEqual(image["type"], "image")
-        self.assertEqual(image["source"], "codex_images")
-        self.assertEqual(image["supported_endpoints"], ["/v1/images/generations"])
-        self.assertEqual(image["availability"], "requires_codex_authorization")
-        self.assertIn("默认未启用", image["description"])
-        self.assertIn("未声明已验证", image["description"])
-        self.assertEqual(result["data"][-2]["source"], "chatgpt_web")
-        self.assertIn("不保证", result["data"][-2]["description"])
-        self.assertFalse(self.path.exists())
+    def create(self, **kwargs):
+        return ModelCatalog(lambda: tuple(self.tokens), fetcher=kwargs.get("fetcher", self.fetch),
+                            clock=lambda: self.now, cache_path=kwargs.get("cache_path", self.path),
+                            identity_resolver=lambda value: self.identities[value], refresh_spacing=0)
 
-    async def test_only_safe_native_chat_slugs_are_returned(self):
-        accepted = ["gpt-6", "gpt-5-6", "gpt-5-6-mini", "gpt-4.1", "o1", "o3-mini", "o4-mini"]
-        rejected = ["auto", "gpt-image-2", "research", "gpt-deep-research", "codex-auto-review",
-                    "gpt-codex-auto-review", "gpt-6-review", "o1anything", "o2", "gpt-",
-                    "gpt-<script>", "gpt-test\n", "gpt-https://private", "GPT-6", "gpt-" + "x" * 97,
-                    "sk-private", "eyJ.private.token", None, 7]
-        self.reply = {"models": [{"slug": slug, "title": "PRIVATE-TITLE", "email": "private@example.invalid"}
-                                  for slug in [*accepted, *rejected, *accepted]]}
+    async def settle(self, service=None):
+        service = service or self.service
+        if service._task:
+            await service._task
+
+    async def test_lazy_get_returns_immediately_and_schedules_one_background_worker(self):
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def slow(value):
+            self.calls.append(value)
+            started.set()
+            await release.wait()
+            return self.replies[value]
+
+        service = self.create(fetcher=slow)
+        self.assertFalse(self.path.exists())
+        first = await asyncio.wait_for(service.get_catalog(), 0.2)
+        self.assertEqual(ids(first), ["auto", "chatgpt-image-latest", "gpt-image-2"])
+        self.assertTrue(first["meta"]["refreshing"])
+        worker = service._task
+        await started.wait()
+        for _ in range(10):
+            await service.get_catalog()
+            self.assertIs(worker, service._task)
+        release.set()
+        await self.settle(service)
+        self.assertEqual(set(self.calls), set(self.tokens))
+
+    async def test_per_account_union_and_public_privacy(self):
+        await self.service.refresh_catalog()
         result = await self.service.get_catalog()
-        self.assertEqual(ids(result), ["auto", *accepted, "chatgpt-image-latest", "gpt-image-2"])
-        self.assertEqual(self.calls, [self.tokens[0]])
-        self.assertTrue(all(model["type"] == "chat" for model in result["data"][:-2]))
-        serialized = json.dumps(result) + self.path.read_text()
-        for secret in [*self.tokens, "PRIVATE-TITLE", "private@example.invalid"]:
+        self.assertEqual(ids(result), ["auto", "gpt-6", "gpt-6-luna", "chatgpt-image-latest", "gpt-image-2"])
+        serialized = json.dumps(result)
+        for secret in [*self.tokens, A, B, "fingerprint"]:
             self.assertNotIn(secret, serialized)
-        self.assertEqual(set(json.loads(self.path.read_text())), {"version", "refreshed_at", "models"})
+        saved = self.path.read_text()
+        for secret in self.tokens:
+            self.assertNotIn(secret, saved)
+        self.assertEqual(json.loads(saved)["version"], 2)
         self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
         self.assertEqual(list(self.path.parent.glob(".model_catalog-*")), [])
+        self.assertTrue(self.service.account_supports_model(A, "gpt-6"))
+        self.assertFalse(self.service.account_supports_model(A, "gpt-6-luna"))
+        self.assertTrue(self.service.account_supports_model(B, "gpt-6-luna"))
+        self.assertFalse(self.service.account_supports_model(B, "gpt-6-6luna"))
+        admin = self.service.get_account_catalogs()
+        rows = {row["account_id"]: row for row in admin["accounts"]}
+        self.assertEqual(rows[A]["models"], ["gpt-6"])
+        self.assertEqual(rows[B]["checks"]["gpt-6-luna"]["status"], "unverified")
+        self.assertEqual(rows[B]["status"], "fresh")
+        self.assertEqual(result["data"][-1]["availability"], "requires_codex_authorization")
 
-    async def test_ttl_and_readonly_results(self):
+    async def test_safe_slugs_only_and_no_alias_invention(self):
+        accepted = ["gpt-6", "gpt-6-luna", "gpt-6-6luna", "gpt-5-6", "gpt-4.1", "o1", "o3-mini", "o4-mini"]
+        rejected = ["auto", "luna", "gpt-image-2", "gpt-deep-research", "codex-auto-review", "gpt-6-review",
+                    "o1anything", "o2", "gpt-", "gpt-<script>", "gpt-test\n", "gpt-https://private",
+                    "GPT-6", "gpt-" + "x" * 97, "sk-private", "eyJ.private.token", None, 7]
+        self.replies["private-a"] = {"models": [{"slug": slug, "title": "PRIVATE", "email": "secret@example.invalid"}
+                                              for slug in [*accepted, *rejected, *accepted]]}
+        self.tokens = ["private-a"]
+        await self.service.refresh_catalog()
+        self.assertEqual(ids(await self.service.get_catalog()), ["auto", *accepted, "chatgpt-image-latest", "gpt-image-2"])
+        self.assertNotIn("PRIVATE", self.path.read_text())
+        self.assertNotIn("secret@example.invalid", self.path.read_text())
+
+    async def test_ttl_force_rate_limit_and_readonly_snapshots(self):
+        await self.service.refresh_catalog()
         first = await self.service.get_catalog()
         first["data"][1]["id"] = "mutated"
-        self.now += CACHE_TTL - 1
+        first_admin = self.service.get_account_catalogs()
+        first_admin["accounts"][0]["models"].clear()
+        await self.service.refresh_catalog(force=True)
+        self.assertEqual(len(self.calls), 2)
+        self.now += RETRY_AFTER
+        await self.service.refresh_catalog(account_id=A, force=True)
+        self.assertEqual(self.calls.count("private-a"), 2)
         self.assertIn("gpt-6", ids(await self.service.get_catalog()))
-        self.assertEqual(len(self.calls), 1)
-        self.now += 1
-        self.reply = {"models": [{"slug": "gpt-6-mini"}]}
-        self.assertEqual(ids(await self.service.get_catalog()), ["auto", "gpt-6-mini", "chatgpt-image-latest", "gpt-image-2"])
+        self.now += CACHE_TTL
+        await self.service.get_catalog()
+        await self.settle()
+        self.assertEqual(len(self.calls), 5)
+
+    async def test_failed_one_account_does_not_stop_other_accounts_or_leak_error(self):
+        self.replies["private-a"] = RuntimeError("PRIVATE-BEARER raw upstream response")
+        await self.service.refresh_catalog()
+        self.assertTrue(self.service.account_supports_model(B, "gpt-6-luna"))
+        rows = self.service.get_account_catalogs()["accounts"]
+        self.assertEqual(rows[0]["error_code"], "unavailable")
+        self.assertEqual(rows[0]["status"], "error")
+        self.assertNotIn("PRIVATE-BEARER", json.dumps(rows) + self.path.read_text())
+
+    async def test_failed_refresh_keeps_last_success_until_max_stale(self):
+        await self.service.refresh_catalog()
+        self.replies["private-a"] = {"models": "bad"}
+        self.now += CACHE_TTL
+        await self.service.refresh_catalog()
+        row = self.service.get_account_catalogs()["accounts"][0]
+        self.assertEqual(row["status"], "stale")
+        self.assertEqual(row["error_code"], "invalid_response")
+        self.assertTrue(self.service.account_supports_model(A, "gpt-6"))
+        self.now = NOW + MAX_STALE + 1
+        self.assertFalse(self.service.account_supports_model(A, "gpt-6"))
+        self.assertEqual(self.service.get_account_catalogs()["accounts"][0]["status"], "expired")
+
+    async def test_restart_uses_per_account_cache_without_network(self):
+        await self.service.refresh_catalog()
+        restarted = self.create()
+        self.assertEqual(ids(await restarted.get_catalog()), ids(await self.service.get_catalog()))
         self.assertEqual(len(self.calls), 2)
+        self.assertFalse(restarted._task)
+        self.assertTrue(restarted.account_supports_model(B, "gpt-6-luna"))
 
-    async def test_restart_uses_fresh_sanitized_disk_cache_without_fetch(self):
-        before = await self.service.get_catalog()
-        restarted = ModelCatalog(lambda: self.tokens, fetcher=self.fetch, clock=lambda: self.now, cache_path=self.path)
-        self.assertEqual(len(self.calls), 1)
-        self.assertEqual(await restarted.get_catalog(), before)
-        self.assertEqual(len(self.calls), 1)
+    async def test_legacy_v1_cache_is_unattributed_not_all_account_permission(self):
+        self.path.write_text(json.dumps({"version": 1, "refreshed_at": NOW,
+                                        "models": ["gpt-old", "sk-secret", "gpt-old"]}))
+        result = await self.service.get_catalog()
+        row = next(row for row in result["data"] if row["id"] == "gpt-old")
+        self.assertEqual(row["verification"], "unverified")
+        self.assertFalse(self.service.account_supports_model(A, "gpt-old"))
+        await self.settle()
+        self.assertEqual(json.loads(self.path.read_text())["version"], 2)
 
-    async def test_failed_refresh_preserves_cache_until_max_stale(self):
-        before = await self.service.get_catalog()
-        original_file = self.path.read_bytes()
-        self.failure = RuntimeError("PRIVATE-BEARER upstream raw failure")
-        self.now += CACHE_TTL
-        with self.assertLogs("chatgpt.model_catalog", level="WARNING") as captured:
-            self.assertEqual(await self.service.get_catalog(), before)
-        self.assertNotIn("PRIVATE-BEARER", "".join(captured.output))
-        self.assertEqual(self.path.read_bytes(), original_file)
-        await self.service.get_catalog()
-        self.assertEqual(len(self.calls), 2)
-        self.now = NOW + MAX_STALE
-        self.assertEqual(await self.service.get_catalog(), before)
-        self.now += RETRY_AFTER + 1
-        self.assertEqual(ids(await self.service.get_catalog()), ["auto", "chatgpt-image-latest", "gpt-image-2"])
-        self.assertEqual(self.path.read_bytes(), original_file)
+    async def test_rotating_credentials_invalidates_snapshot_and_checks(self):
+        await self.service.refresh_catalog()
+        self.service.record_model_check(A, "gpt-6-luna", "verified", sent_model="gpt-6-luna",
+                                        reported_model="gpt-6-luna", http_status=200)
+        self.tokens = ["private-a-rotated", "private-b"]
+        self.assertFalse(self.service.account_supports_model(A, "gpt-6"))
+        self.assertFalse(self.service.account_supports_model(A, "gpt-6-luna"))
+        self.assertEqual(self.service.get_account_catalogs()["accounts"][0]["status"], "unqueried")
+        self.replies["private-a-rotated"] = {"models": [{"slug": "gpt-6-mini"}]}
+        await self.service.refresh_catalog()
+        self.assertTrue(self.service.account_supports_model(A, "gpt-6-mini"))
 
-    async def test_invalid_upstream_body_does_not_clear_previous_models(self):
-        before = await self.service.get_catalog()
-        self.now += CACHE_TTL
-        self.reply = {"models": "PRIVATE-INVALID-RESPONSE"}
-        self.assertEqual(await self.service.get_catalog(), before)
+    async def test_removed_account_never_supplies_public_models(self):
+        await self.service.refresh_catalog()
+        self.tokens = ["private-a"]
+        self.assertNotIn("gpt-6-luna", ids(await self.service.get_catalog()))
+        self.assertFalse(self.service.account_supports_model(B, "gpt-6-luna"))
 
-    async def test_no_token_keeps_stale_cache_and_throttles_repeated_attempts(self):
-        before = await self.service.get_catalog()
-        self.tokens = []
-        self.now += CACHE_TTL
-        self.assertEqual(await self.service.get_catalog(), before)
-        self.assertEqual(len(self.calls), 1)
-        self.tokens = ["new-synthetic-token"]
-        await self.service.get_catalog()
-        self.assertEqual(len(self.calls), 1)
-        self.now += RETRY_AFTER
-        await self.service.get_catalog()
-        self.assertEqual(self.calls[-1], "new-synthetic-token")
+    async def test_unavailable_credentials_keep_admin_row_without_upstream_requests(self):
+        service = ModelCatalog(lambda: ["private-a"], account_token_source=lambda: self.tokens,
+            fetcher=self.fetch, identity_resolver=lambda value: self.identities[value],
+            clock=lambda: self.now, cache_path=None, refresh_spacing=0)
+        await service.refresh_catalog()
+        rows = {row["account_id"]: row for row in service.get_account_catalogs()["accounts"]}
+        self.assertEqual(set(rows), {A, B})
+        self.assertEqual(rows[B]["status"], "error")
+        self.assertEqual(rows[B]["error_code"], "credentials_unavailable")
+        self.assertFalse(rows[B]["discovery_available"])
+        self.assertFalse(service.account_supports_model(B, "auto"))
+        self.assertEqual(self.calls, ["private-a"])
 
-    async def test_concurrent_success_and_failure_refresh_are_singleflight(self):
+    async def test_duplicate_credentials_for_same_account_fetch_once(self):
+        self.identities["private-a-copy"] = A
+        self.tokens = ["private-a", "private-a", "private-a-copy"]
+        await self.service.refresh_catalog()
+        self.assertEqual(self.calls, ["private-a"])
+        self.assertEqual(len(self.service.get_account_catalogs()["accounts"]), 1)
+
+    async def test_exact_verified_model_is_added_but_mismatch_or_denial_excluded(self):
+        await self.service.refresh_catalog()
+        self.service.record_model_check(A, "gpt-6-luna", "verified", sent_model="gpt-6-luna",
+                                        reported_model="gpt-6-luna", http_status=200)
+        self.assertTrue(self.service.account_supports_model(A, "gpt-6-luna"))
+        self.service.record_model_check(B, "gpt-6-luna", "verified", sent_model="gpt-6-luna",
+                                        reported_model="gpt-6-mini", http_status=200)
+        self.assertFalse(self.service.account_supports_model(B, "gpt-6-luna"))
+        self.assertEqual(self.service.get_model_support(B, "gpt-6-luna")["status"], "model_mismatch")
+        self.service.record_model_check(A, "gpt-6-luna", "denied", sent_model="gpt-6-luna",
+                                        http_status=403, error_code="permission_denied")
+        self.assertFalse(self.service.account_supports_model(A, "gpt-6-luna"))
+        self.assertNotIn("gpt-6-luna", ids(await self.service.get_catalog()))
+
+    async def test_http_200_without_model_evidence_does_not_verify(self):
+        row = self.service.record_model_check(A, "gpt-6-luna", "verified", http_status=200)
+        self.assertEqual(row["status"], "model_mismatch")
+        self.assertFalse(self.service.account_supports_model(A, "gpt-6-luna"))
+        self.assertEqual(self.calls, [])
+
+    async def test_verification_status_expiry_and_safe_metadata(self):
+        row = self.service.record_model_check(A, "gpt-6-luna", "error", sent_model="sk-PRIVATE",
+                                              reported_model="PRIVATE URL", http_status="200", error_code="Bearer SECRET")
+        self.assertIsNone(row["sent_model"])
+        self.assertIsNone(row["reported_model"])
+        self.assertIsNone(row["error_code"])
+        self.assertNotIn("PRIVATE", self.path.read_text())
+        self.assertNotIn("SECRET", self.path.read_text())
+        self.service.record_model_check(A, "gpt-6-luna", "verified", sent_model="gpt-6-luna", reported_model="gpt-6-luna")
+        self.now += MAX_STALE + 1
+        self.assertFalse(self.service.account_supports_model(A, "gpt-6-luna"))
+        self.assertTrue(self.service.get_account_catalogs()["accounts"][0]["checks"]["gpt-6-luna"]["stale"])
+        for key, model, status in [("bad", "gpt-6-luna", "verified"), (A, "sk-private", "verified"), (A, "gpt-6", "bad")]:
+            with self.assertRaises(ValueError):
+                self.service.record_model_check(key, model, status)
+
+    async def test_public_evidence_counts_are_not_double_counted(self):
+        await self.service.refresh_catalog()
+        self.service.record_model_check(B, "gpt-6-luna", "verified", sent_model="gpt-6-luna", reported_model="gpt-6-luna")
+        row = next(row for row in (await self.service.get_catalog())["data"] if row["id"] == "gpt-6-luna")
+        self.assertEqual(row["meta"], {"directory_accounts": 1, "verified_accounts": 1})
+
+    async def test_external_verification_cache_update_is_observed(self):
+        await self.service.refresh_catalog()
+        other = self.create()
+        self.assertFalse(self.service.account_supports_model(A, "gpt-6-luna"))
+        other.record_model_check(A, "gpt-6-luna", "verified", sent_model="gpt-6-luna", reported_model="gpt-6-luna")
+        self.assertTrue(self.service.account_supports_model(A, "gpt-6-luna"))
+
+    async def test_legacy_auto_and_web_image_remain_compatible_but_channels_do_not_mix(self):
+        for model in [None, "auto", "gpt-4o", "gpt-4o-2024-08-06", "o3-mini-high", "g-test", "gizmo-test", "chatgpt-image-latest"]:
+            self.assertTrue(self.service.account_supports_model(A, model))
+        self.assertFalse(self.service.account_supports_model(A, "gpt-image-2"))
+        self.assertFalse(self.service.account_supports_model(A, "auto", channel="codex_native"))
+        self.assertEqual(self.calls, [])
+
+    async def test_bounded_concurrency_cancellation_and_timeout(self):
+        self.tokens.append("private-c")
         started, finish = asyncio.Event(), asyncio.Event()
-        calls = []
+        active, maximum = 0, 0
 
-        async def fetch(value):
-            calls.append(value)
+        async def slow(value):
+            nonlocal active, maximum
+            active += 1
+            maximum = max(maximum, active)
             started.set()
-            await finish.wait()
-            if self.failure:
-                raise self.failure
-            return self.reply
+            try:
+                await finish.wait()
+            finally:
+                active -= 1
+            return {"models": [{"slug": "gpt-6"}]}
 
-        service = ModelCatalog(lambda: self.tokens, fetcher=fetch, clock=lambda: self.now, cache_path=None)
-        pending = [asyncio.create_task(service.get_catalog()) for _ in range(12)]
+        service = self.create(fetcher=slow, cache_path=None)
+        pending = asyncio.create_task(service.refresh_catalog())
         await started.wait()
-        self.assertEqual(len(calls), 1)
-        finish.set()
-        results = await asyncio.gather(*pending)
-        self.assertEqual(len(calls), 1)
-        self.assertTrue(all(item == results[0] for item in results))
-        self.now += CACHE_TTL
-        self.failure = RuntimeError("synthetic error")
-        failed = await asyncio.gather(*(service.get_catalog() for _ in range(12)))
-        self.assertEqual(len(calls), 2)
-        self.assertTrue(all(item == results[0] for item in failed))
-
-    async def test_timeout_returns_defaults_and_cancellation_releases_lock(self):
-        async def slow(_):
-            await asyncio.Event().wait()
-
-        service = ModelCatalog(lambda: self.tokens, fetcher=slow, clock=lambda: self.now, cache_path=None)
-        with patch("chatgpt.model_catalog.FETCH_TIMEOUT", 0.01):
-            self.assertEqual(ids(await service.get_catalog()), ["auto", "chatgpt-image-latest", "gpt-image-2"])
-        self.now += RETRY_AFTER
-        pending = asyncio.create_task(service.get_catalog())
         await asyncio.sleep(0)
         pending.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await pending
+        self.assertEqual(active, 0)
+        self.assertLessEqual(maximum, 2)
         self.assertFalse(service._lock.locked())
-        self.assertEqual(ids(await service.get_catalog()), ["auto", "chatgpt-image-latest", "gpt-image-2"])
+        self.now += RETRY_AFTER
+        with patch("chatgpt.model_catalog.FETCH_TIMEOUT", 0.01):
+            await service.refresh_catalog()
+        self.assertEqual(active, 0)
+        self.assertTrue(all(row["error_code"] == "timeout" for row in service.get_account_catalogs()["accounts"]))
 
-    async def test_disk_failure_retains_memory_and_rejects_unsafe_cache(self):
-        self.path.write_text(json.dumps({"version": 1, "refreshed_at": NOW + 1, "models": ["gpt-unsafe-future"]}))
+    async def test_explicit_refresh_singleflight_and_target_validation(self):
+        await asyncio.gather(*(self.service.refresh_catalog() for _ in range(12)))
+        self.assertEqual(len(self.calls), 2)
+        with self.assertRaises(ValueError):
+            await self.service.refresh_catalog("bad")
+        with self.assertRaises(ValueError):
+            await self.service.refresh_catalog(C)
+
+    async def test_disk_failure_and_invalid_cache_are_safe(self):
+        self.path.write_text(json.dumps({"version": 1, "refreshed_at": NOW + 1, "models": ["gpt-future"]}))
         with patch("chatgpt.model_catalog.os.replace", side_effect=OSError("PRIVATE-PATH")):
-            result = await self.service.get_catalog()
-        self.assertEqual(ids(result), ["auto", "gpt-6", "gpt-5-6", "chatgpt-image-latest", "gpt-image-2"])
+            await self.service.refresh_catalog()
+        self.assertTrue(self.service.account_supports_model(A, "gpt-6"))
+        self.assertTrue(self.service.get_account_catalogs()["cache_persistence_error"])
         self.assertEqual(list(self.path.parent.glob(".model_catalog-*")), [])
-        self.assertEqual(await self.service.get_catalog(), result)
-        self.assertEqual(len(self.calls), 1)
 
-    async def test_cached_models_are_revalidated_and_oversize_file_is_ignored(self):
-        self.path.write_text(json.dumps({"version": 1, "refreshed_at": NOW, "models": ["gpt-6", "sk-secret", "gpt-image-2", "gpt-6", "<script>"]}))
-        self.assertEqual(ids(await self.service.get_catalog()), ["auto", "gpt-6", "chatgpt-image-latest", "gpt-image-2"])
-        self.assertEqual(self.calls, [])
-        self.path.write_text(" " * 70000)
-        service = ModelCatalog(lambda: [], fetcher=self.fetch, clock=lambda: self.now, cache_path=self.path)
-        self.assertEqual(ids(await service.get_catalog()), ["auto", "chatgpt-image-latest", "gpt-image-2"])
-
-    async def test_find_model_does_not_claim_unknown_slug_exists(self):
+    async def test_find_model_does_not_invent_unknown_ids(self):
         self.assertIsNone(await self.service.find_model([]))
         self.assertIsNone(await self.service.find_model("gpt-<script>"))
         self.assertEqual(self.calls, [])
+        await self.service.refresh_catalog()
         self.assertEqual((await self.service.find_model("gpt-6"))["type"], "chat")
         self.assertEqual((await self.service.find_model("gpt-image-2"))["type"], "image")
-        self.assertEqual((await self.service.find_model("chatgpt-image-latest"))["type"], "image")
         self.assertIsNone(await self.service.find_model("gpt-not-listed"))
 
 

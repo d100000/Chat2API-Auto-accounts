@@ -19,6 +19,9 @@ import tempfile
 import time
 import uuid
 
+from chatgpt.account_concurrency import (ConcurrencyStore, ConcurrencyPersistenceError,
+    credential_alias, get_concurrency_store)
+
 
 FEATURES = ("reason", "image_gen")
 MAX_EVENTS = 100
@@ -75,6 +78,12 @@ class Lease:
     account_id: str
     feature: str
     acquired_at: float
+    quota_features: tuple = ()
+    channel: str = "chatgpt_web"
+
+    @property
+    def concurrency_kind(self):
+        return self.feature
 
 
 class NoAvailableAccount(Exception):
@@ -87,11 +96,27 @@ class NoAvailableAccount(Exception):
         self.retry_after_seconds = max(1, min(3600, math.ceil(retry_after_seconds)))
 
 
+class AccountConcurrencyExhausted(NoAvailableAccount):
+    code = "account_concurrency_exhausted"
+
+    def __init__(self, feature):
+        super().__init__(feature, 3)
+
+
+class ModelNotAvailable(NoAvailableAccount):
+    code = "model_not_available"
+
+
 class AccountScheduler:
-    def __init__(self, quota_service, *, state_path="data/account_scheduler.json", clock=time.time):
+    def __init__(self, quota_service, *, state_path="data/account_scheduler.json", clock=time.time,
+                 concurrency_store=None, model_support=None):
         self._quota = quota_service
         self._path = Path(state_path) if state_path is not None else None
         self._clock = clock
+        # Tests/custom state paths get an adjacent isolated policy store.
+        self.concurrency = concurrency_store if concurrency_store is not None else ConcurrencyStore(
+            self._path.with_name("account_concurrency.json") if self._path is not None else None)
+        self._model_support = model_support
         self._lock = asyncio.Lock()
         self._active = {}
         self._states = {}
@@ -99,6 +124,89 @@ class AccountScheduler:
         self._last_selected = {}
         self._persistence_error = False
         self._load()
+
+    def admission_guard(self):
+        """Coordinate import publication and administrative policy changes."""
+        return self._lock
+
+    async def update_concurrency(self, **kwargs):
+        async with self._lock:
+            self._sync_identities(self._quota._groups())
+            return self.concurrency.update(**kwargs)
+
+    async def synchronize_identities(self):
+        """Call before an administrative snapshot after credentials refresh."""
+        async with self._lock:
+            self.synchronize_identities_locked()
+
+    def synchronize_identities_locked(self):
+        """Synchronous counterpart for callers already holding admission_guard."""
+        self._sync_identities(self._quota._groups())
+
+    def _supports(self, account_id, model, channel="chatgpt_web"):
+        if model is None or channel != "chatgpt_web":
+            return True
+        check = self._model_support
+        if check is None:
+            from chatgpt.model_catalog import account_supports_model
+            check = account_supports_model
+        return bool(check(account_id, model, channel=channel))
+
+    def _merge_runtime(self, previous, target):
+        old = self._states.get(previous)
+        if old is not None:
+            new = self._states.get(target, _empty())
+            blocks = dict(new["blocks"])
+            debits = dict(new["provisional"])
+            for feature, value in old["blocks"].items():
+                existing = blocks.get(feature)
+                blocks[feature] = value if existing is None else {
+                    "at": max(value["at"], existing["at"]), "reason": "upstream_quota",
+                    "reset_at": max(value.get("reset_at") or 0, existing.get("reset_at") or 0) or None}
+            for feature, value in old["provisional"].items():
+                existing = debits.get(feature, {})
+                debits[feature] = {"count": min(10**9, value["count"] + existing.get("count", 0)),
+                    "finished_at": max(value["finished_at"], existing.get("finished_at", 0))}
+            merged = {**new, "blocks": blocks, "provisional": debits,
+                "cooldown_until": max(old["cooldown_until"] or 0, new["cooldown_until"] or 0) or None,
+                "cooldown_reason": new["cooldown_reason"] or old["cooldown_reason"],
+                "auth_at": max(old["auth_at"] or 0, new["auth_at"] or 0) or None,
+                "last_selected_at": max(old["last_selected_at"] or 0, new["last_selected_at"] or 0) or None}
+            self._states = {**{key: value for key, value in self._states.items() if key != previous}, target: merged}
+        self._last_selected = {feature: target if key == previous else key for feature, key in self._last_selected.items()}
+
+    def bind_identity(self, token, account_id, *, account_override=None):
+        """Call under admission_guard when importing/confirming a new identity."""
+        migrations = self.concurrency.bind_alias(account_id, credential_alias(token, account_override))
+        for previous, target in migrations:
+            self._merge_runtime(previous, target)
+        if migrations:
+            self._save()
+        return self.concurrency.resolve(account_id)
+
+    def _sync_identities(self, groups):
+        # Include every credential, not only the group's selected token. This
+        # preserves overrides when a refresh-token fingerprint becomes a JWT ID.
+        token_source = getattr(self._quota, "_token_source", None)
+        if token_source is not None:
+            from chatgpt.account_quota import _identity
+            refresh_source = getattr(self._quota, "_refresh_map_source", lambda: {})
+            refresh_map = refresh_source()
+            for token in tuple(token_source()):
+                identity = _identity(token, refresh_map=refresh_map)
+                self.bind_identity(token, identity["id"])
+        else:
+            for account_id, group in groups.items():
+                self.bind_identity(group["token"], account_id)
+
+    def _capacity(self, account_id, feature):
+        key = self.concurrency.resolve(account_id)
+        policy = self.concurrency.limits(key)
+        active = sum(self.concurrency.resolve(lease.account_id) == key and lease.feature == feature for lease in self._active.values())
+        limit = policy["effective"][feature]
+        return {"active": active, "limit": limit, "available_slots": max(0, limit - active),
+                "available": active < limit, "state": "draining" if active > limit else "full" if active == limit else "available",
+                "source": "default" if policy["overrides"][feature] is None else "account", "conflict": policy["conflict"]}
 
     def _event(self, kind, account_id, feature=None, reason=None, from_id=None):
         event = {"at": _iso(self._clock()), "type": kind, "account_id": account_id,
@@ -167,7 +275,10 @@ class AccountScheduler:
                 if not isinstance(row, dict) or not _public_id(row.get("account_id")) or row.get("feature") not in FEATURES:
                     continue
                 key = row["account_id"]
-                self._debit(key, _required(row["feature"]), self._clock())
+                features = row.get("quota_features", _required(row["feature"]))
+                if not isinstance(features, (list, tuple)) or any(item not in FEATURES for item in features):
+                    continue
+                self._debit(self.concurrency.resolve(key), features, self._clock())
                 self._event("interrupted", key, row["feature"], "restart")
                 recovered = True
             if recovered:
@@ -188,7 +299,8 @@ class AccountScheduler:
                 os.fchmod(handle.fileno(), 0o600)
                 json.dump({"version": 1, "accounts": self._states, "events": self._events,
                            "last_selected": self._last_selected,
-                           "active": [{"account_id": lease.account_id, "feature": lease.feature,
+                           "active": [{"account_id": self.concurrency.resolve(lease.account_id), "feature": lease.feature,
+                                       "quota_features": list(lease.quota_features),
                                        "acquired_at": lease.acquired_at} for lease in self._active.values()]}, handle)
             os.replace(temporary, self._path)
             self._persistence_error = False
@@ -224,9 +336,10 @@ class AccountScheduler:
         now = self._clock()
         before = (deepcopy(self._states), len(self._events))
         for account in snapshot.get("accounts", []):
-            key = _public_id(account.get("id"))
-            if not key:
+            raw_key = _public_id(account.get("id"))
+            if not raw_key:
                 continue
+            key = self.concurrency.resolve(raw_key)
             state = self._states.get(key, _empty())
             read_started = self._successful_read(account)
             checked = _stamp(account.get("checked_at"))
@@ -274,12 +387,13 @@ class AccountScheduler:
             self._save()
 
     def _active_counts(self, account_id):
-        leases = [lease for lease in self._active.values() if lease.account_id == account_id]
-        return len(leases), {feature: sum(feature in _required(lease.feature) for lease in leases) for feature in FEATURES}
+        key = self.concurrency.resolve(account_id)
+        leases = [lease for lease in self._active.values() if self.concurrency.resolve(lease.account_id) == key]
+        return len(leases), {feature: sum(feature in lease.quota_features for lease in leases) for feature in FEATURES}
 
     def _feature_state(self, account, feature):
         now = self._clock()
-        key = account["id"]
+        key = self.concurrency.resolve(account["id"])
         state = self._states.get(key, _empty())
         count, reserved = self._active_counts(key)
         observed = account.get("features", {}).get(feature, {})
@@ -324,30 +438,54 @@ class AccountScheduler:
             if not reason["available"] and image["available"]:
                 image = {**image, "state": reason["state"], "available": False,
                          "reason": "reason_" + str(reason["reason"]), "retry_at": reason["retry_at"]}
-            state = self._states.get(key, _empty())
+            capacity = {feature: self._capacity(key, feature) for feature in FEATURES}
+            def with_capacity(value, feature):
+                slot = capacity[feature]
+                result = {**value, "active": slot["active"], "limit": slot["limit"], "available_slots": slot["available_slots"]}
+                if value["available"] and not slot["available"]:
+                    result = {**result, "available": False, "state": "concurrency_full", "reason": "concurrency_full"}
+                return result
+            reason, image = with_capacity(reason, "reason"), with_capacity(image, "image_gen")
+            state = self._states.get(self.concurrency.resolve(key), _empty())
             accounts[key] = {"reason": reason, "image_gen": image,
+                             "concurrency": capacity,
                              "active_requests": self._active_counts(key)[0],
                              "last_selected_at": _iso(state["last_selected_at"]), "last_event": deepcopy(state["last_event"])}
         return {"enabled": True, "policy": "quota_aware", "accounts": accounts,
+                "concurrency": self.concurrency.snapshot(accounts),
                 "events": deepcopy(self._events[::-1]), "persistence_error": self._persistence_error}
 
-    async def acquire(self, feature="reason", excluded=frozenset(), preferred_account_id=None):
+    async def acquire(self, feature="reason", excluded=frozenset(), preferred_account_id=None, model=None):
         if feature not in FEATURES:
             raise ValueError("Unsupported scheduling feature")
         async with self._lock:
             source = self._quota.get_accounts()
+            self._sync_identities(self._quota._groups())
             public = self.snapshot(source)
             groups = self._quota._groups()
             excluded = frozenset(excluded)
             ranked = []
             retries = []
+            capacity_blocked = False
+            model_blocked = False
+            model_candidates = 0
             for row in source.get("accounts", []):
                 key = row.get("id")
                 if key not in public["accounts"] or key in excluded or key not in groups:
                     continue
                 if preferred_account_id is not None and key != preferred_account_id:
                     continue
-                per_feature = [public["accounts"][key][name] for name in _required(feature)]
+                canonical = self.concurrency.resolve(key)
+                if not self._supports(canonical, model):
+                    model_blocked = True
+                    continue
+                model_candidates += 1
+                if not self._capacity(canonical, feature)["available"]:
+                    capacity_blocked = True
+                    continue
+                # Quota dependencies do not imply concurrency dependencies:
+                # an image reserves both balances but only one image slot.
+                per_feature = [self._feature_state(row, name) for name in _required(feature)]
                 if not all(item["available"] for item in per_feature):
                     retries.extend(stamp - self._clock() for item in per_feature if (stamp := _stamp(item.get("retry_at"))) is not None and stamp > self._clock())
                     continue
@@ -357,20 +495,60 @@ class AccountScheduler:
                 selected_at = self._states.get(key, _empty())["last_selected_at"] or 0
                 ranked.append(((fresh, capacity, -selected_at, key), row, groups[key]))
             if not ranked:
+                if capacity_blocked:
+                    raise AccountConcurrencyExhausted(feature)
+                if model_blocked and not model_candidates:
+                    raise ModelNotAvailable(feature)
                 raise NoAvailableAccount(feature, min(retries) if retries else 60)
             _, row, group = max(ranked, key=lambda item: item[0])
-            key, now = row["id"], self._clock()
-            lease = Lease(uuid.uuid4().hex, group["token"], key, feature, now)
+            key, now = self.concurrency.resolve(row["id"]), self._clock()
+            lease = Lease(uuid.uuid4().hex, group["token"], key, feature, now, _required(feature))
             self._active = {**self._active, lease.id: lease}
             state = self._states.get(key, _empty())
             self._states = {**self._states, key: {**state, "last_selected_at": now}}
             previous = self._last_selected.get(feature)
-            fallback = any(public["accounts"][key][name]["state"] != "ready" for name in _required(feature))
+            fallback = any(self._feature_state(row, name)["state"] != "ready" for name in _required(feature))
             self._event("switched" if previous and previous != key else "selected", key, feature,
                         "unknown_fallback" if fallback else "quota_priority", previous)
             self._last_selected = {**self._last_selected, feature: key}
             self._save()
             return lease
+
+    async def acquire_for_account(self, token, feature="reason", *, account_id=None,
+                                  account_override=None, model=None, quota_mode="none", channel="chatgpt_web"):
+        """Capacity for a fixed direct/Seed/native identity, without switching."""
+        if feature not in FEATURES or quota_mode != "none" or channel not in {"chatgpt_web", "codex_native"}:
+            raise ValueError("Unsupported fixed-account admission mode")
+        from chatgpt.account_quota import account_identity
+        identifier = account_id or account_identity(token, account_override)["id"]
+        async with self._lock:
+            self._sync_identities(self._quota._groups())
+            key = self.bind_identity(token, identifier, account_override=account_override)
+            if not self._supports(key, model, channel):
+                raise ModelNotAvailable(feature)
+            if not self._capacity(key, feature)["available"]:
+                raise AccountConcurrencyExhausted(feature)
+            lease = Lease(uuid.uuid4().hex, token, key, feature, self._clock(), (), channel)
+            self._active = {**self._active, lease.id: lease}
+            self._save()
+            return lease
+
+    async def confirm_identity(self, lease, account_id, *, account_override=None):
+        """After access-token refresh, merge identities before dispatching.
+
+        If two previously separate credentials now exceed the shared cap, reject
+        this not-yet-dispatched request; the caller's finally releases its lease.
+        Existing upstream work is never cancelled by a settings change.
+        """
+        async with self._lock:
+            old_key = self.concurrency.resolve(lease.account_id)
+            key = self.bind_identity(lease.token, account_id, account_override=account_override)
+            # A different alias spelling must still migrate this active lease.
+            if old_key != key and self.concurrency.resolve(old_key) != key:
+                key = self.bind_identity(lease.token, account_id)
+            if lease.account_id != key and self._capacity(key, lease.feature)["active"] > self._capacity(key, lease.feature)["limit"]:
+                raise AccountConcurrencyExhausted(lease.feature)
+            return key
 
     async def finish(self, lease, *, status, dispatched=False, error=None, image_requested=False):
         if not isinstance(status, str) or status not in {"succeeded", "failed", "cancelled", "interrupted"}:
@@ -380,13 +558,16 @@ class AccountScheduler:
             if live is None or live != lease:
                 return
             self._active = {key: value for key, value in self._active.items() if key != lease.id}
-            now, key = self._clock(), lease.account_id
-            if dispatched:
+            now, key = self._clock(), self.concurrency.resolve(lease.account_id)
+            if dispatched and lease.quota_features:
                 required = FEATURES if image_requested or lease.feature == "image_gen" else ("reason",)
                 self._debit(key, required, now)
             evidence = error if isinstance(error, dict) and isinstance(error.get("kind"), str) and error["kind"] in _KINDS else {}
             kind = evidence.get("kind")
             state = self._states.get(key, _empty())
+            if not lease.quota_features:
+                self._save()
+                return
             if kind == "quota":
                 affected = evidence.get("feature") if evidence.get("feature") in FEATURES else lease.feature
                 reset = _stamp(evidence.get("reset_at"))
@@ -412,5 +593,5 @@ def get_scheduler():
     global _scheduler
     if _scheduler is None:
         from chatgpt.account_quota import _default_service
-        _scheduler = AccountScheduler(_default_service())
+        _scheduler = AccountScheduler(_default_service(), concurrency_store=get_concurrency_store())
     return _scheduler

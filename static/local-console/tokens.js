@@ -17,6 +17,7 @@
   const seedDialog = byId('seed-dialog');
   const seedCancel = byId('seed-cancel');
   const seedConfirm = byId('seed-confirm');
+  const reasonLimit = byId('token-reason-limit'), imageLimit = byId('token-image-limit'), overwriteExisting = byId('token-overwrite-existing');
   const prefix = document.body.dataset.apiPrefix || '';
   const base = prefix ? `/${prefix}/tokens` : '/tokens';
   let state = { pending: false, action: null, errors: [], revealed: false, sessionExpired: false };
@@ -25,7 +26,7 @@
     state = { ...state, pending, action };
     form.setAttribute('aria-busy', String(pending && action === 'upload'));
     dialog.setAttribute('aria-busy', String(pending && action === 'clear'));
-    for (const control of [input, upload, clear, errorButton, reveal, copy, confirm, cancel, seedClear, seedCancel, seedConfirm, byId('tokens-logout')]) {
+    for (const control of [input, reasonLimit, imageLimit, overwriteExisting, upload, clear, errorButton, reveal, copy, confirm, cancel, seedClear, seedCancel, seedConfirm, byId('tokens-logout')]) {
       control.disabled = pending || state.sessionExpired;
     }
     upload.textContent = pending && action === 'upload' ? '正在导入…' : '导入凭据 ↑';
@@ -42,6 +43,7 @@
   function clearNotices() {
     error.hidden = true;
     feedback.hidden = true;
+    byId('tokens-import-result').hidden = true;
     byId('clear-dialog-error').hidden = true;
     byId('seed-dialog-error').hidden = true;
   }
@@ -79,6 +81,8 @@
           403: '请求来源校验失败，请刷新本地页面后重试。',
           413: '本次导入内容过多，请分批导入。',
           429: '操作过于频繁，请稍后再试。',
+          422: '输入未通过校验，请检查凭据格式与并发设置。',
+          503: state.action === 'upload' ? '导入尚未确认完成，输入已保留。请先查看账号状态，确认结果后再重试。' : '本地服务暂不可用，请稍后重试。',
         };
         // Server error bodies may contain submitted credentials; never render them.
         throw new Error(messages[response.status] || `操作未完成（HTTP ${response.status}），请稍后重试。`);
@@ -126,6 +130,7 @@
   }
 
   input.addEventListener('input', updateLineCount);
+  overwriteExisting.addEventListener('change', () => { byId('token-overwrite-warning').hidden = !overwriteExisting.checked; });
 
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -137,14 +142,21 @@
       input.focus();
       return;
     }
+    if (![reasonLimit.value, imageLimit.value].every((value) => value === 'inherit' || /^(?:[1-9]|10)$/.test(value))) { showError(new Error('并发设置需为继承默认或 1–10 的整数。')); return; }
     setPending(true, 'upload');
     try {
-      const data = await request(`${base}/upload`, { body: new URLSearchParams({ text: lines.join('\n') }) });
+      const data = await request(`${base}/upload`, { body: new URLSearchParams({ text: lines.join('\n'), reason_limit: reasonLimit.value, image_gen_limit: imageLimit.value, overwrite_existing: String(overwriteExisting.checked) }) });
       if (data.status !== 'success') throw new Error('服务未确认导入成功，输入内容已保留，请检查后重试。');
       updateCount(data);
       input.value = '';
       updateLineCount();
-      showSuccess('凭据已导入，可前往账号额度页检查状态。');
+      const fields = ['added_credentials', 'duplicate_credentials', 'new_accounts', 'existing_accounts', 'settings_applied', 'pending_identity'];
+      const validSummary = fields.every((name) => Number.isInteger(data[name]) && data[name] >= 0);
+      showSuccess(validSummary ? `已新增 ${data.added_credentials} 条凭据，跳过 ${data.duplicate_credentials} 条重复；新增 ${data.new_accounts} 个账号，匹配 ${data.existing_accounts} 个已有账号。已应用 ${data.settings_applied} 个账号的并发设置${data.pending_identity ? `；${data.pending_identity} 个身份待确认` : ''}。` : '凭据已导入，可前往账号额度页检查状态与并发设置。');
+      const ids = Array.isArray(data.account_ids) ? [...new Set(data.account_ids.filter((id) => typeof id === 'string' && /^acct_[0-9a-f]{24}$/.test(id)))] : [];
+      const link = byId('tokens-import-accounts'); link.href = ids.length && ids.length <= 50 ? '/accounts?ids=' + encodeURIComponent(ids.join(',')) : '/accounts';
+      link.textContent = ids.length && ids.length <= 50 ? `查看本次导入的 ${ids.length} 个账号 →` : '查看账号与并发设置 →';
+      byId('tokens-import-result').hidden = false;
     } catch (cause) {
       showError(cause);
     } finally {

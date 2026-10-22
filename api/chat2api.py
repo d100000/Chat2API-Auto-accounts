@@ -51,6 +51,10 @@ async def api_error(request, exception):
 
 @app.on_event("startup")
 async def app_start():
+    from chatgpt.account_import import recover_import
+    await recover_import()
+    from chatgpt.model_catalog import get_catalog
+    await get_catalog()  # Cache read; bounded discovery runs in the background.
     if scheduled_refresh:
         scheduler.add_job(id='refresh', func=refresh_all_tokens, trigger='cron', hour=3, minute=0, day='*/2',
                           kwargs={'force_refresh': True})
@@ -73,6 +77,17 @@ async def to_send_conversation(request_data, req_token, lease=None):
         if chat_service.usage_trace:
             chat_service.usage_trace.scheduled_feature = lease.feature if lease else "reason"
         await chat_service.set_dynamic_data(request_data)
+        if lease and chat_service.access_token:
+            from chatgpt.account_quota import _identity
+            from chatgpt.account_scheduler import get_scheduler, AccountConcurrencyExhausted
+            try:
+                await get_scheduler().confirm_identity(lease,
+                    _identity(chat_service.access_token, override=chat_service.account_id)["id"],
+                    account_override=chat_service.account_id)
+            except AccountConcurrencyExhausted as error:
+                raise HTTPException(429, {"code": error.code,
+                    "message": "账号身份归并后并发已满，请等待当前请求完成。"},
+                    headers={"Retry-After": str(error.retry_after_seconds)}) from None
         if chat_service.usage_trace:
             chat_service.usage_trace.set_model(chat_service.req_model)
         await chat_service.get_chat_requirements()
@@ -94,20 +109,42 @@ async def to_send_conversation(request_data, req_token, lease=None):
 
 
 async def finish_attempt(service, status, error_code=None):
-    try:
-        lease = getattr(service, "schedule_lease", None)
-        if lease and not getattr(service, "schedule_finished", False):
-            from chatgpt.account_scheduler import get_scheduler
-            evidence = getattr(service.usage_trace, "evidence", None)
-            await asyncio.shield(get_scheduler().finish(lease, status=status,
-                dispatched=getattr(service, "conversation_dispatched", False),
-                error=getattr(service, "schedule_error", None),
-                image_requested=bool(evidence and evidence.image_requested)))
-            service.schedule_finished = True
-        if service.usage_trace:
-            await asyncio.shield(service.usage_trace.finish(status, error_code))
-    finally:
-        await asyncio.shield(service.close_client())
+    from anyio import CancelScope
+    async def finalize():
+        try:
+            if service.usage_trace:
+                await service.usage_trace.finish(status, error_code)
+        finally:
+            try:
+                # A new admission must not reuse the slot while the preceding
+                # local upstream connection is still being closed.
+                await service.close_client()
+            finally:
+                lease = getattr(service, "schedule_lease", None)
+                if lease and not getattr(service, "schedule_finished", False):
+                    from chatgpt.account_scheduler import get_scheduler
+                    evidence = getattr(service.usage_trace, "evidence", None)
+                    await get_scheduler().finish(lease, status=status,
+                        dispatched=getattr(service, "conversation_dispatched", False),
+                        error=getattr(service, "schedule_error", None),
+                        image_requested=bool(evidence and evidence.image_requested))
+                    service.schedule_finished = True
+    task = getattr(service, "_attempt_finish_task", None)
+    if task is None or task.cancelled():
+        task = asyncio.create_task(finalize())
+        service._attempt_finish_task = task
+    interrupted = False
+    with CancelScope(shield=True):
+        while True:
+            try:
+                await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                interrupted = True
+    if interrupted:
+        raise asyncio.CancelledError
 
 
 async def tracked_stream(service, response):
@@ -311,7 +348,10 @@ async def send_conversation(request: Request, credentials: HTTPAuthorizationCred
     request.state.analytics_request_id = metrics.id
     request_data = {**request_data, "_request_metrics": metrics}
     try:
-        chat_service, res = await run_request(process, request_data, req_token)
+        chat_service, res = await run_connected(request, run_request(process, request_data, req_token))
+    except ClientDisconnected:
+        await metrics.finish("cancelled", 499, "client_disconnected")
+        return Response(status_code=499)
     except asyncio.CancelledError:
         await metrics.finish("cancelled", 499, "client_cancelled")
         raise
@@ -386,27 +426,27 @@ async def upload_html(request: Request):
 
 
 @app.post(f"/{api_prefix}/tokens/upload" if api_prefix else "/tokens/upload")
-async def upload_post(text: str = Form(...)):
-    lines = text.split("\n")
-    for line in lines:
-        if line.strip() and not line.startswith("#"):
-            globals.token_list.append(line.strip())
-            with open(globals.TOKENS_FILE, "a", encoding="utf-8") as f:
-                f.write(line.strip() + "\n")
-    logger.info(f"Token count: {len(globals.token_list)}, Error token count: {len(globals.error_token_list)}")
-    tokens_count = len(set(globals.token_list) - set(globals.error_token_list))
-    return {"status": "success", "tokens_count": tokens_count}
+async def upload_post(text: str = Form(...), reason_limit: str = Form("inherit"),
+                      image_gen_limit: str = Form("inherit"), overwrite_existing: str = Form("false")):
+    from chatgpt.account_import import import_accounts, ImportValidationError, ImportPersistenceError
+    if overwrite_existing not in {"true", "false"}:
+        raise HTTPException(422, "覆盖已有配置选项无效。")
+    try:
+        return await import_accounts(text, reason_limit=reason_limit, image_gen_limit=image_gen_limit,
+                                     overwrite_existing=overwrite_existing == "true")
+    except ImportValidationError as error:
+        raise HTTPException(422, str(error)) from None
+    except ImportPersistenceError as error:
+        raise HTTPException(503, str(error)) from None
 
 
 @app.post(f"/{api_prefix}/tokens/clear" if api_prefix else "/tokens/clear")
 async def clear_tokens():
-    globals.token_list.clear()
-    globals.error_token_list.clear()
-    with open(globals.TOKENS_FILE, "w", encoding="utf-8") as f:
-        pass
-    logger.info(f"Token count: {len(globals.token_list)}, Error token count: {len(globals.error_token_list)}")
-    tokens_count = len(set(globals.token_list) - set(globals.error_token_list))
-    return {"status": "success", "tokens_count": tokens_count}
+    from chatgpt.account_import import clear_accounts, ImportPersistenceError
+    try:
+        return await clear_accounts()
+    except ImportPersistenceError as error:
+        raise HTTPException(503, str(error)) from None
 
 
 @app.post(f"/{api_prefix}/tokens/error" if api_prefix else "/tokens/error")
@@ -417,13 +457,12 @@ async def error_tokens():
 
 @app.get(f"/{api_prefix}/tokens/add/{{token}}" if api_prefix else "/tokens/add/{token}")
 async def add_token(token: str):
-    if token.strip() and not token.startswith("#"):
-        globals.token_list.append(token.strip())
-        with open(globals.TOKENS_FILE, "a", encoding="utf-8") as f:
-            f.write(token.strip() + "\n")
-    logger.info(f"Token count: {len(globals.token_list)}, Error token count: {len(globals.error_token_list)}")
-    tokens_count = len(set(globals.token_list) - set(globals.error_token_list))
-    return {"status": "success", "tokens_count": tokens_count}
+    return await upload_post(
+        text=token,
+        reason_limit="inherit",
+        image_gen_limit="inherit",
+        overwrite_existing="false",
+    )
 
 
 @app.post(f"/{api_prefix}/seed_tokens/clear" if api_prefix else "/seed_tokens/clear")

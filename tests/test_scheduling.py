@@ -134,16 +134,65 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.refresh_calls, 1)
         self.assertIn('Retry-After', raised.exception.headers)
 
-    async def test_direct_credentials_bypass_scheduler_and_keep_binding_fields(self):
+    async def test_direct_credentials_keep_binding_fields_and_use_capacity_lease(self):
+        import sys
         calls = []
-        async def process(data, token):
-            calls.append((data, token))
+        async def process(data, token, lease=None):
+            calls.append((data, token, lease))
+            self.assertEqual(lease.quota_features, ())
+            await self.scheduler.finish(lease, status='succeeded', dispatched=True)
             return 'direct', 'result'
-        with patch('chatgpt.scheduling.pool_request', return_value=False):
+        with patch('chatgpt.scheduling.pool_request', return_value=False), patch.dict(sys.modules, {
+            'chatgpt.authorization': types.SimpleNamespace(get_req_token=lambda value: value)}):
             body = {'conversation_id': 'existing', 'Chatgpt-Account-Id': 'workspace'}
             self.assertEqual(await run_request(process, body, 'direct-token'), ('direct', 'result'))
-        self.assertEqual(calls, [(body, 'direct-token')])
+        self.assertEqual(calls[0][:2], (body, 'direct-token'))
+        self.assertEqual(calls[0][2].token, 'direct-token')
         self.assertFalse(self.scheduler.snapshot()['events'])
+
+    async def test_capacity_full_does_not_refresh_quota(self):
+        self.quota.rows = [account(A, reason=100)]
+        for _ in range(3): await self.scheduler.acquire()
+        async def must_not_call(*args, **kwargs): self.fail('generation must not start')
+        with self.assertRaises(HTTPException) as raised:
+            await run_request(must_not_call, {}, 'local-key')
+        self.assertEqual(raised.exception.status_code, 429)
+        self.assertEqual(raised.exception.detail['code'], 'account_concurrency_exhausted')
+        self.assertEqual(raised.exception.headers['Retry-After'], '3')
+        self.assertEqual(self.refresh_calls, 0)
+
+    async def test_empty_direct_selector_returns_safe_error_before_admission(self):
+        import sys
+        async def must_not_call(*args, **kwargs): self.fail('generation must not start')
+        with patch('chatgpt.scheduling.pool_request', return_value=False), patch.dict(sys.modules, {
+            'chatgpt.authorization': types.SimpleNamespace(get_req_token=lambda value: '')}):
+            with self.assertRaises(HTTPException) as raised:
+                await run_request(must_not_call, {}, 'synthetic-key')
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(raised.exception.detail['code'], 'account_pool_empty')
+
+    async def test_local_capacity_rejection_does_not_cool_down_account(self):
+        value = {'error': {'code': 'account_concurrency_exhausted'}}
+        self.assertEqual(error_signal(value, 429), {'kind': 'request'})
+
+    async def test_seed_resolves_once_and_cancellation_releases_fixed_lease(self):
+        import sys
+        selected, started = [], asyncio.Event()
+        def select(value):
+            selected.append(value)
+            return 'synthetic-fixed-account'
+        async def blocked(data, token, lease=None):
+            self.assertEqual(lease.token, 'synthetic-fixed-account')
+            started.set()
+            await asyncio.Future()
+        with patch('chatgpt.scheduling.pool_request', return_value=False), patch.dict(sys.modules, {
+            'chatgpt.authorization': types.SimpleNamespace(get_req_token=select)}):
+            task = asyncio.create_task(run_request(blocked, {}, 'synthetic-seed'))
+            await started.wait()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError): await task
+        self.assertEqual(selected, ['synthetic-seed'])
+        self.assertEqual(len(self.scheduler._active), 0)
 
     async def test_pool_binding_fields_reject_before_acquisition(self):
         async def must_not_call(*args, **kwargs):
@@ -167,6 +216,7 @@ class LeaseLifecycleTests(PipelineTests):
                 self.conversation_dispatched = False
                 self.conversation_accepted = False
                 self.conversation_rejected = False
+                self.access_token = None  # Synthetic lifecycle fixture does not refresh credentials.
             async def send_conversation(self):
                 self.conversation_dispatched = True
                 self.conversation_accepted = True
@@ -210,13 +260,39 @@ class LeaseLifecycleTests(PipelineTests):
             cleanup = asyncio.create_task(self.ns['finish_attempt'](service, 'interrupted', 'response_not_consumed'))
             await asyncio.sleep(0)
             cleanup.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await cleanup
+            await asyncio.sleep(0)
+            self.assertFalse(cleanup.done())
         finally:
             self.scheduler._lock.release()
+        with self.assertRaises(asyncio.CancelledError):
+            await cleanup
         await self.ns['finish_attempt'](service, 'interrupted', 'response_not_consumed')
         self.assertTrue(service.closed)
         self.assertEqual(sum(row['active_requests'] for row in self.scheduler.snapshot()['accounts'].values()), 0)
+        await response.aclose()
+
+    async def test_capacity_stays_reserved_until_client_close_finishes(self):
+        lease = await self.scheduler.acquire()
+        service, response = await self.ns['process']({'events': [event(), '[DONE]']}, 'shared', lease=lease)
+        entered, release = asyncio.Event(), asyncio.Event()
+        original_close = service.close_client
+        async def close():
+            entered.set()
+            await release.wait()
+            await original_close()
+        service.close_client = close
+        cleanup = asyncio.create_task(self.ns['finish_attempt'](service, 'cancelled', 'client_cancelled'))
+        await entered.wait()
+        self.assertEqual(sum(row['active_requests'] for row in self.scheduler.snapshot()['accounts'].values()), 1)
+        cleanup.cancel()
+        await asyncio.sleep(0)
+        cleanup.cancel()
+        await asyncio.sleep(0)
+        self.assertFalse(cleanup.done())
+        release.set()
+        with self.assertRaises(asyncio.CancelledError): await cleanup
+        self.assertEqual(sum(row['active_requests'] for row in self.scheduler.snapshot()['accounts'].values()), 0)
+        self.assertTrue(service.closed)
         await response.aclose()
 
 # Inherited regression methods are exercised by test_account_usage itself.

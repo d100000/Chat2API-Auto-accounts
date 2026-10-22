@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import random
@@ -543,7 +544,7 @@ if no_sentinel:
     @app.post("/backend-alt/conversation")
     @app.post("/backend-api/conversation")
     async def chat_conversations(request: Request):
-        token = request.headers.get("Authorization", "").replace("Bearer ", "")
+        token = request.headers.get("Authorization", "").replace("Bearer ", "").strip() or request.cookies.get("token", "")
         req_token = await get_real_req_token(token)
         access_token = await verify_token(req_token)
         fp = get_fp(req_token).copy()
@@ -568,13 +569,22 @@ if no_sentinel:
         headers.update(fp)
         headers.update({"authorization": f"Bearer {access_token}"})
 
+        from chatgpt.gateway_capacity import admit_generation, GatewayCapacity
+        from utils.disconnect import run_connected
+        raw_body = await request.body()
+        capacity = await admit_generation(request, request.url.path, req_token, raw_body, access=access_token,
+            account_override=headers.get("chatgpt-account-id"))
+        owner = capacity or GatewayCapacity(None, None)
+
         try:
             session_id = hashlib.md5(req_token.encode()).hexdigest()
             proxy_url = proxy_url.replace("{}", session_id) if proxy_url else None
             client = Client(proxy=proxy_url, impersonate=impersonate)
+            owner.bind_cleanup(client.close)
             if sentinel_proxy_url_list:
                 sentinel_proxy_url = random.choice(sentinel_proxy_url_list).replace("{}", session_id) if sentinel_proxy_url_list else None
                 clients = Client(proxy=sentinel_proxy_url, impersonate=impersonate)
+                owner.bind_cleanup(clients.close)
             else:
                 clients = client
 
@@ -584,8 +594,8 @@ if no_sentinel:
                 config = get_config(user_agent, session_id)
                 p = get_requirements_token(config)
                 data = {'p': p}
-                r = await clients.post(f'{host_url}/backend-api/sentinel/chat-requirements', headers=headers, json=data,
-                                       timeout=10)
+                r = await run_connected(request, clients.post(f'{host_url}/backend-api/sentinel/chat-requirements', headers=headers, json=data,
+                                       timeout=10))
                 resp = r.json()
                 turnstile = resp.get('turnstile', {})
                 turnstile_required = turnstile.get('required')
@@ -593,11 +603,11 @@ if no_sentinel:
                     turnstile_dx = turnstile.get("dx")
                     try:
                         if turnstile_solver_url:
-                            res = await client.post(turnstile_solver_url,
-                                                    json={"url": "https://chatgpt.com", "p": p, "dx": turnstile_dx, "ua": user_agent})
+                            res = await run_connected(request, client.post(turnstile_solver_url,
+                                                    json={"url": "https://chatgpt.com", "p": p, "dx": turnstile_dx, "ua": user_agent}))
                             turnstile_token = res.json().get("t")
-                    except Exception as e:
-                        logger.info(f"Turnstile ignored: {e}")
+                    except Exception:
+                        logger.info("Web conversation challenge solver unavailable.")
 
                 proofofwork = resp.get('proofofwork', {})
                 proofofwork_required = proofofwork.get('required')
@@ -621,21 +631,17 @@ if no_sentinel:
                     "openai-sentinel-proof-token": sentinel_tokens.get("proof_token", ""),
                     "openai-sentinel-turnstile-token": sentinel_tokens.get("turnstile_token", "")
                 })
-        except Exception as e:
-            logger.error(f"Sentinel failed: {e}")
+        except asyncio.CancelledError:
+            await owner.finish("cancelled")
+            raise
+        except Exception:
+            await owner.finish("failed")
+            logger.error("Web conversation requirements failed.")
             return Response(status_code=403, content="Sentinel failed")
 
         params = dict(request.query_params)
-        data = await request.body()
+        data = raw_body
         request_cookies = dict(request.cookies)
-
-        async def c_close(client, clients):
-            if client:
-                await client.close()
-                del client
-            if clients:
-                await clients.close()
-                del clients
 
         history = True
         try:
@@ -649,25 +655,32 @@ if no_sentinel:
             req_json["history_and_training_disabled"] = True
             data = json.dumps(req_json).encode("utf-8")
 
-        background = BackgroundTask(c_close, client, clients)
-        r = await client.post_stream(f"{host_url}{request.url.path}", params=params, headers=headers,
-                                     cookies=request_cookies, data=data, stream=True, allow_redirects=False)
-        rheaders = r.headers
-        logger.info(f"Request token: {req_token}")
-        logger.info(f"Request proxy: {proxy_url}")
-        logger.info(f"Request UA: {user_agent}")
-        logger.info(f"Request impersonate: {impersonate}")
-        if x_sign:
-            rheaders.update({"x-sign": x_sign})
-        if 'stream' in rheaders.get("content-type", ""):
-            conv_key = r.cookies.get("conv_key", "")
-            response = StreamingResponse(content_generator(r, token, history), headers=rheaders,
-                                         media_type=r.headers.get("content-type", ""), background=background)
-            response.set_cookie("conv_key", value=conv_key)
-            return response
-        else:
-            return Response(content=(await r.atext()), headers=rheaders, media_type=rheaders.get("content-type"),
+        handed_off = False
+        try:
+            background = BackgroundTask(owner.finish)
+            r = await run_connected(request, client.post_stream(f"{host_url}{request.url.path}", params=params, headers=headers,
+                                         cookies=request_cookies, data=data, stream=True, allow_redirects=False))
+            rheaders = dict(r.headers)
+            logger.info("Web conversation started with configured account.")
+            if x_sign:
+                rheaders.update({"x-sign": x_sign})
+            if 'stream' in rheaders.get("content-type", ""):
+                conv_key = r.cookies.get("conv_key", "")
+                source = content_generator(r, token, history)
+                source = owner.stream(source)
+                response = StreamingResponse(source, headers=rheaders,
+                                             media_type=r.headers.get("content-type", ""), background=background)
+                response.set_cookie("conv_key", value=conv_key)
+                handed_off = True
+                return response
+            return Response(content=(await run_connected(request, r.atext())), headers=rheaders, media_type=rheaders.get("content-type"),
                             status_code=r.status_code, background=background)
+        except BaseException:
+            await owner.finish()
+            raise
+        finally:
+            if not handed_off:
+                await owner.finish()
 
 
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH", "TRACE"])

@@ -272,7 +272,15 @@ async def connection_key(request: Request):
 
 
 async def with_local_usage(snapshot):
+    await get_scheduler().synchronize_identities()
     scheduler_state = get_scheduler().snapshot(snapshot)
+    catalog = model_catalog.get_account_catalogs()
+    per_account = {row["account_id"]: row for row in catalog.get("accounts", [])}
+    snapshot = {**snapshot, "model_catalog": catalog,
+        "accounts": [{**account,
+            "model_catalog": per_account.get(account["id"], {"status": "unknown", "models": [], "checks": {}}),
+            "concurrency": scheduler_state.get("accounts", {}).get(account["id"], {}).get("concurrency")}
+            for account in snapshot["accounts"]]}
     snapshot = {**snapshot, "scheduler": {**scheduler_state,
         "enabled": scheduling.enabled() and configs.auto_seed and bool(configs.authorization_list)}}
     try:

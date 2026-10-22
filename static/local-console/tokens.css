@@ -108,3 +108,10 @@
   .token-list { padding: 0 var(--space-4) var(--space-4); }
   .tokens-dialog-actions .button { flex: 1; }
 }
+.tokens-concurrency { min-width: 0; margin: var(--space-5) 0; padding: var(--space-4) 0; border: 0; border-top: 1px solid var(--color-border); }
+.tokens-concurrency legend { font-size: var(--type-sm); font-weight: 550; padding-right: var(--space-2); }
+.tokens-concurrency-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-4); margin-top: var(--space-4); }
+.tokens-overwrite { display: flex; align-items: start; gap: var(--space-2); min-height: var(--control-height); margin: 0; font-weight: 400; font-size: var(--type-xs); cursor: pointer; }
+.tokens-overwrite input { accent-color: var(--color-accent); flex: none; margin-top: var(--space-1); }
+.tokens-import-result { margin-bottom: var(--space-4); font-size: var(--type-sm); }
+@media (max-width: 420px) { .tokens-concurrency-grid { grid-template-columns: minmax(0, 1fr); gap: var(--space-2); } }

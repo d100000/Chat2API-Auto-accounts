@@ -244,3 +244,44 @@
   .account-detail-shell { padding-inline: var(--space-3); }
 }
 @media (prefers-reduced-motion: reduce) { .loading-indicator, .account-detail-shell.is-entering { animation: none; } .account-row, .detail-tab, .details-chevron { transition: none; } }
+
+/* Account controls reuse the shared form/dialog tokens. */
+.accounts-page { --concurrency-dialog-width: 560px; --account-check-size: 16px; --account-check-target: 32px; }
+.concurrency-toolbar, .account-selection-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--accounts-cell-inset); border-top: 1px solid var(--color-border); }
+.concurrency-toolbar { justify-content: space-between; }
+.concurrency-toolbar strong { font-size: var(--type-xs); font-weight: 550; }
+.concurrency-toolbar .field-hint { margin-top: var(--space-1); }
+.concurrency-toolbar-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.account-selection-toolbar { background: var(--color-subtle); border-top: 0; border-bottom: 1px solid var(--color-border); }
+.account-selection-toolbar > .field-hint { flex: 1; }
+.account-select-control { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--control-height); font-size: var(--type-xs); font-weight: 400; margin: 0; cursor: pointer; }
+.account-select-control input { width: var(--account-check-size); height: var(--account-check-size); accent-color: var(--color-accent); margin: 0; flex: none; }
+.account-row-select { flex: none; justify-content: center; width: var(--account-check-target); min-height: var(--account-check-target); }
+.account-concurrency { margin-top: var(--space-2); padding-top: var(--space-2); border-top: 1px dashed var(--color-border); }
+.account-concurrency-value { font-size: var(--type-xs); font-variant-numeric: tabular-nums; color: var(--color-text); }
+.account-concurrency[data-state='full'] .account-concurrency-value, .account-concurrency[data-state='draining'] .account-concurrency-value { color: var(--color-warning); }
+.account-luna-status { display: block; margin-top: var(--space-2); font-size: var(--type-xs); line-height: 1.5; color: var(--color-muted); overflow-wrap: anywhere; }
+.account-luna-status[data-tone='success'] { color: var(--color-success); }
+.account-luna-status[data-tone='warning'] { color: var(--color-warning); }
+.account-luna-status[data-tone='error'] { color: var(--color-error); }
+.concurrency-dialog { width: min(var(--concurrency-dialog-width), calc(100% - var(--space-6))); max-height: calc(100svh - var(--space-6)); padding: 0; overflow-y: auto; }
+.concurrency-dialog-body { padding: var(--space-6); }
+.concurrency-dialog-body h2 { font-size: var(--type-lg); margin-bottom: var(--space-2); }
+.concurrency-dialog-body > .field-hint { margin-bottom: var(--space-4); }
+.concurrency-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-5); margin-block: var(--space-5); }
+.concurrency-fields fieldset { margin: 0; padding: 0; border: 0; min-width: 0; }
+.concurrency-fields legend { font-size: var(--type-sm); font-weight: 550; margin-bottom: var(--space-3); }
+.concurrency-fields label:not(.sr-only) { margin-top: var(--space-3); }
+.concurrency-fields .field-hint { margin-top: var(--space-2); }
+.concurrency-dialog-actions { display: flex; justify-content: flex-end; gap: var(--space-2); padding: var(--space-4) var(--space-6); border-top: 1px solid var(--color-border); background: var(--color-subtle); }
+@media (max-width: 760px) {
+  .account-row-select { --account-check-target: 44px; }
+  .concurrency-toolbar-actions { width: 100%; }
+  .concurrency-toolbar-actions .button, .concurrency-dialog-actions .button { flex: 1; }
+  .account-selection-toolbar > .account-select-control, .account-selection-toolbar > .field-hint { flex-basis: 100%; }
+  .account-selection-toolbar > .button { flex: 1; }
+  .concurrency-dialog-body { padding: var(--space-4); }
+  .concurrency-fields { gap: var(--space-4); }
+  .concurrency-dialog-actions { padding-inline: var(--space-4); }
+}
+@media (max-width: 420px) { .concurrency-fields { grid-template-columns: minmax(0, 1fr); } }

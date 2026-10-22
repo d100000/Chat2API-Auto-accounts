@@ -77,6 +77,22 @@ async def _finish_attempt(service, status, code):
     await finish_attempt(service, status, code)
 
 
+async def _acquire_capacity(token, access, account_override):
+    from chatgpt.account_quota import _identity
+    from chatgpt.account_scheduler import get_scheduler, AccountConcurrencyExhausted
+    from chatgpt.account_concurrency import ConcurrencyPersistenceError
+    try:
+        return await get_scheduler().acquire_for_account(token, "image_gen",
+            account_id=_identity(access, override=account_override)["id"], account_override=account_override,
+            quota_mode="none", channel="codex_native")
+    except AccountConcurrencyExhausted as error:
+        busy = image_error(429, error.code, "该账号的生图并发已满，请等待当前请求完成。")
+        busy.headers = {"Retry-After": str(error.retry_after_seconds)}
+        raise busy from None
+    except ConcurrencyPersistenceError:
+        raise image_error(503, "concurrency_configuration_unavailable", "账号并发配置暂不可用。") from None
+
+
 def _new_session(proxy, impersonate):
     from curl_cffi import CurlOpt
     from curl_cffi.requests import AsyncSession
@@ -268,6 +284,8 @@ class NativeImageService:
         account_id = (data.get("Chatgpt-Account-Id") or embedded or fingerprint.get("chatgpt-account-id") or _account_claim(access))
         if account_id and (not isinstance(account_id, str) or not _ACCOUNT_ID.fullmatch(account_id)):
             raise image_error(400, "invalid_account_id", "账号工作区标识无效。")
+        if not self.schedule_lease:
+            self.schedule_lease = await _acquire_capacity(self.req_token, access, account_id)
         config = _runtime()
         base = random.choice(config.chatgpt_base_url_list) if config.chatgpt_base_url_list else "https://chatgpt.com"
         origin = urlsplit(base)

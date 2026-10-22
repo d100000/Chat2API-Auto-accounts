@@ -11,7 +11,7 @@
   const schedulerStateLabels = {
     ready: '可选', available: '可选', active: '执行中', unknown: '额度待确认', stale: '额度待刷新',
     exhausted: '额度已用尽', cooldown: '暂时冷却', reset_pending: '等待重置核验', rechecking: '正在核验',
-    expired: '凭据过期', auth_error: '凭据需更新', disabled: '暂停使用', reserved: '额度已预留', unavailable: '暂不可选',
+    expired: '凭据过期', auth_error: '凭据需更新', disabled: '暂停使用', concurrency_full: '并发已满', draining: '等待现有请求结束', reserved: '额度已预留', unavailable: '暂不可选',
   };
   const schedulerReasonLabels = {
     quota_available: '上游额度可用', available: '上游额度可用', selected: '按当前额度选中', quota_priority: '优先选择剩余额度较多的账号',
@@ -29,6 +29,7 @@
     rate_limit: '上游暂时限流', transient: '请求暂时失败，等待冷却后再试', auth: '上游认证失败',
     unknown_fallback: '没有已确认额度可用的账号时，才单路尝试该账号', restart: '服务重启，未完成请求先保留估算扣减',
     credentials: '账号凭据已过期或异常', cooldown_elapsed: '冷却结束，允许再次尝试',
+    concurrency_limit: '已达到账号并发上限，等待现有请求结束', concurrency_full: '已达到账号并发上限',
     awaiting_quota_refresh: '估算可分配额度已用完，等待重新查询',
   };
   const schedulerEventLabels = {
@@ -47,6 +48,173 @@
   let pollCount = 0;
   let loadWaiters = [];
   let schedulerEventsSignature = null;
+
+  const concurrencyDialog = byId('concurrency-dialog');
+  const features = ['reason', 'image_gen'];
+  let selection = new Set();
+  let concurrency = {config: null, mode: null, targets: [], loading: false, saving: false, dirty: false, conflict: false, opener: null, generation: 0};
+  let modelBusy = false;
+  const importedIds = new URLSearchParams(window.location.search).get('ids');
+  let importFilter = importedIds ? new Set(importedIds.split(',').filter((id) => /^acct_[0-9a-f]{24}$/.test(id)).slice(0, 500)) : null;
+  if (importFilter && !importFilter.size) importFilter = null;
+
+  function runtimeConcurrency(account, feature) {
+    return account.concurrency?.[feature] || state.snapshot?.scheduler?.accounts?.[account.id]?.concurrency?.[feature] || null;
+  }
+  function concurrencyContent(account, feature) {
+    const value = runtimeConcurrency(account, feature), box = el('div', 'account-concurrency');
+    const active = value?.in_flight ?? value?.active;
+    box.append(el('span', 'account-concurrency-value', value ? `并发 ${count(active)} / ${count(value.limit)}` : '并发状态未提供'));
+    if (value) {
+      const waiting = value.state === 'draining' ? '等待现有请求结束' : value.state === 'full' ? '并发已满' : '';
+      box.append(el('span', 'quota-note', [value.source === 'account' ? '账号自定义' : '继承默认', waiting].filter(Boolean).join(' · ')));
+      box.dataset.state = value.state || 'unknown';
+    }
+    const conflict = value?.conflict || account.concurrency?.conflict || state.snapshot?.scheduler?.accounts?.[account.id]?.concurrency?.conflict || concurrency.config?.accounts?.[account.id]?.conflict;
+    if (conflict) box.append(el('span', 'quota-note is-warning', '身份归并冲突，已采用较小上限'));
+    return box;
+  }
+  function accountCatalog(account) {
+    return account.model_catalog || state.snapshot?.model_catalog?.accounts?.find?.((item) => item.account_id === account.id) || {};
+  }
+  function lunaStatus(account) {
+    const catalog = accountCatalog(account), check = catalog.checks?.['gpt-6-luna'];
+    if (check?.stale) return {text: '历史核查已过期', tone: 'muted'};
+    if (check?.status === 'model_mismatch' || (check?.status === 'verified' && ((check.reported_model && check.reported_model !== 'gpt-6-luna') || (check.sent_model && check.sent_model !== 'gpt-6-luna')))) return {text: '调用成功，但模型不一致', tone: 'warning'};
+    if (check?.status === 'verified' && check.reported_model === 'gpt-6-luna') return {text: '调用成功 · 模型标签一致', tone: 'success'};
+    if (['denied', 'error'].includes(check?.status)) return {text: check.status === 'denied' ? '调用被拒绝' : '调用失败', tone: 'error'};
+    if (Array.isArray(catalog.models) && catalog.checked_at && ['fresh', 'stale'].includes(catalog.status)) {
+      return {text: (catalog.status === 'stale' ? '旧' : '') + (catalog.models.includes('gpt-6-luna') ? '目录已列出 · 调用未核查' : '目录未发现'), tone: 'muted'};
+    }
+    return {text: '未核查', tone: 'muted'};
+  }
+  function lunaBadge(account) {
+    const value = lunaStatus(account), node = el('span', 'account-luna-status', 'Luna · ' + value.text);
+    node.dataset.tone = value.tone;
+    const catalog = accountCatalog(account), checked = catalog.checks?.['gpt-6-luna']?.checked_at;
+    node.title = `gpt-6-luna；调用核查 ${dateText(checked)}；目录更新 ${dateText(catalog.checked_at)}。目录出现不代表调用成功，响应标签不证明底层模型身份。`;
+    return node;
+  }
+  function modelCatalogDetails(account) {
+    const box = section('Luna 与账号模型目录'), catalog = accountCatalog(account), check = catalog.checks?.['gpt-6-luna'];
+    box.append(lunaBadge(account), definition([['请求模型', check?.requested_model || 'gpt-6-luna'], ['发送模型', check?.sent_model], ['响应模型', check?.reported_model], ['调用核查时间', dateText(check?.checked_at)], ['目录更新时间', dateText(catalog.checked_at)]]));
+    const models = Array.isArray(catalog.models) ? catalog.models.filter((id) => typeof id === 'string' && /^[A-Za-z0-9._-]{1,100}$/.test(id)) : [];
+    box.append(el('p', 'detail-context-note', models.length ? '目录：' + models.join(' · ') : '尚无可展示的目录。'));
+    box.append(el('p', 'field-hint', '刷新目录只读取上游元数据，不生成内容。目录列出与模型调用核查分别记录；标签一致也不证明底层模型身份。'));
+    if (['stale', 'expired', 'error'].includes(catalog.status)) box.append(el('p', 'field-hint', '目录为旧快照或最近读取失败，请刷新后查看。'));
+    return box;
+  }
+  function syncSelection() {
+    const visible = filteredAccounts(), selectedVisible = visible.filter((account) => selection.has(account.id)).length;
+    const all = byId('accounts-select-all'); all.checked = Boolean(visible.length) && selectedVisible === visible.length;
+    all.indeterminate = selectedVisible > 0 && selectedVisible < visible.length;
+    all.disabled = !visible.length || state.expired || concurrency.saving;
+    byId('accounts-select-label').textContent = `全选当前筛选的 ${visible.length} 个账号`;
+    const hidden = selection.size - selectedVisible;
+    byId('accounts-selection-count').textContent = selection.size ? `已选 ${selection.size} 个${hidden ? ` · ${hidden} 个不在当前视图` : ''}` : '未选择账号';
+    byId('concurrency-batch').disabled = !selection.size || state.expired || concurrency.saving;
+    byId('accounts-clear-selection').disabled = !selection.size || concurrency.saving;
+    byId('concurrency-defaults').disabled = state.expired || concurrency.saving;
+    byId('models-refresh-all').disabled = !accounts().length || modelBusy || state.expired;
+    byId('models-refresh-all').textContent = modelBusy ? '正在刷新目录…' : '刷新模型目录';
+    ui['accounts-rows'].querySelectorAll('[data-concurrency-account]').forEach((button) => { button.disabled = state.expired || concurrency.saving; });
+    ui['accounts-rows'].querySelectorAll('[data-select-account]').forEach((input) => { input.disabled = state.expired || concurrency.saving; });
+  }
+  function concurrencyError(message, reload = false) {
+    byId('concurrency-error').textContent = message; byId('concurrency-error').hidden = !message;
+    byId('concurrency-reload').hidden = !reload;
+  }
+  function concurrencyControls() {
+    const locked = concurrency.loading || concurrency.saving || state.expired;
+    byId('concurrency-form').setAttribute('aria-busy', String(concurrency.loading || concurrency.saving));
+    byId('concurrency-loading').hidden = !concurrency.loading;
+    byId('concurrency-fields').hidden = concurrency.loading || !concurrency.config;
+    byId('concurrency-save').disabled = locked || !concurrency.config || !concurrency.dirty || concurrency.conflict;
+    byId('concurrency-save').textContent = concurrency.saving ? '正在保存…' : '保存设置';
+    byId('concurrency-cancel').disabled = concurrency.saving;
+    byId('concurrency-reload').disabled = locked;
+    for (const feature of features) {
+      const mode = byId(`concurrency-${feature}-mode`), input = byId(`concurrency-${feature}-value`);
+      mode.disabled = locked; input.disabled = locked || (concurrency.mode !== 'defaults' && mode.value !== 'custom');
+    }
+    syncSelection();
+  }
+  function populateConcurrency() {
+    const config = concurrency.config, row = config.accounts?.[concurrency.targets[0]];
+    for (const feature of features) {
+      const mode = byId(`concurrency-${feature}-mode`), input = byId(`concurrency-${feature}-value`);
+      mode.hidden = concurrency.mode === 'defaults';
+      mode.replaceChildren(...(concurrency.mode === 'batch' ? ['keep', 'inherit', 'custom'] : ['inherit', 'custom']).map((value) => { const option = el('option', '', {keep: '保持不变', inherit: '继承系统默认', custom: '自定义'}[value]); option.value = value; return option; }));
+      const override = row?.overrides?.[feature];
+      mode.value = concurrency.mode === 'batch' ? 'keep' : concurrency.mode === 'defaults' || Number.isInteger(override) ? 'custom' : 'inherit';
+      input.value = String(concurrency.mode === 'account' && Number.isInteger(override) ? override : config.defaults[feature]);
+      byId(`concurrency-${feature}-hint`).textContent = `系统默认 ${config.defaults[feature]} · ${concurrency.mode === 'defaults' ? '仅影响继承此项的账号' : '选择继承后会跟随默认值变化'}`;
+    }
+    const names = concurrency.targets.map((id) => accounts().find((account) => account.id === id)?.label || '已移除账号');
+    const description = concurrency.mode === 'defaults' ? '修改系统默认值，账号自定义值保持不变。' : concurrency.mode === 'batch' ? `本次固定修改 ${names.length} 个账号。保持不变不会覆盖该项现有设置。` : `为 ${names[0]} 设置独立上限，两项可分别继承默认。`;
+    const conflict = row?.conflict;
+    byId('concurrency-description').textContent = description + (conflict ? ' 身份归并时检测到设置冲突，已采用较小值，可在此重新确认。' : '');
+    byId('concurrency-default-summary').textContent = `默认大模型 ${config.defaults.reason} · 生图 ${config.defaults.image_gen}；账号可分别覆盖。`;
+    concurrency = {...concurrency, dirty: false, conflict: false}; concurrencyControls();
+  }
+  async function readConcurrency() {
+    const generation = concurrency.generation;
+    concurrency = {...concurrency, loading: true}; concurrencyError(''); concurrencyControls();
+    try {
+      const config = await request('/local-console/accounts/concurrency');
+      if (!Number.isInteger(config.revision) || !features.every((name) => Number.isInteger(config.defaults?.[name]) && config.defaults[name] >= 1 && config.defaults[name] <= 10) || !config.accounts) throw new Error('无法识别并发配置，请重新载入。');
+      if (generation !== concurrency.generation || !concurrencyDialog.open) return;
+      concurrency = {...concurrency, config}; populateConcurrency();
+    } catch (cause) { if (generation === concurrency.generation && concurrencyDialog.open) concurrencyError(cause instanceof SessionExpired ? '登录已过期，请重新登录。' : '无法读取并发配置，请重新载入。', !(cause instanceof SessionExpired)); }
+    finally { if (generation === concurrency.generation) { concurrency = {...concurrency, loading: false}; concurrencyControls(); if (concurrency.config && concurrencyDialog.open && !state.expired) byId(concurrency.mode === 'defaults' ? 'concurrency-reason-value' : 'concurrency-reason-mode').focus(); } }
+  }
+  function openConcurrency(mode, ids = []) {
+    if (state.expired || concurrency.saving) return;
+    concurrency = {...concurrency, mode, targets: [...ids], config: null, dirty: false, conflict: false, opener: document.activeElement, generation: concurrency.generation + 1};
+    byId('concurrency-title').textContent = mode === 'defaults' ? '系统默认并发' : mode === 'batch' ? `批量设置并发 · ${ids.length} 个账号` : '账号并发设置';
+    byId('concurrency-description').textContent = '正在读取最新配置。';
+    concurrencyDialog.showModal(); void readConcurrency();
+  }
+  function closeConcurrency() {
+    if (concurrency.saving) return;
+    concurrencyDialog.close(); concurrency = {...concurrency, dirty: false, generation: concurrency.generation + 1, loading: false};
+    const opener = concurrency.opener?.isConnected ? concurrency.opener : byId('concurrency-defaults'); opener.focus();
+  }
+  async function saveConcurrency(event) {
+    event.preventDefault(); if (concurrency.loading || concurrency.saving || !concurrency.config || !concurrency.dirty || state.expired || concurrency.conflict) return;
+    const changes = {};
+    for (const feature of features) {
+      const mode = concurrency.mode === 'defaults' ? 'custom' : byId(`concurrency-${feature}-mode`).value;
+      if (mode === 'keep') continue;
+      if (mode === 'inherit') { changes[feature] = null; continue; }
+      const input = byId(`concurrency-${feature}-value`), value = Number(input.value);
+      if (!/^\d+$/.test(input.value) || !Number.isInteger(value) || value < 1 || value > 10) { concurrencyError('并发上限必须是 1–10 的整数。'); input.focus(); return; }
+      changes[feature] = value;
+    }
+    if (!Object.keys(changes).length) { concurrencyError('请选择至少一项要修改的设置。'); return; }
+    const path = concurrency.mode === 'defaults' ? '/local-console/accounts/concurrency/defaults' : concurrency.mode === 'batch' ? '/local-console/accounts/concurrency/batch' : `/local-console/accounts/${encodeURIComponent(concurrency.targets[0])}/concurrency`;
+    const body = {revision: concurrency.config.revision, [concurrency.mode === 'defaults' ? 'limits' : 'overrides']: changes, ...(concurrency.mode === 'batch' ? {account_ids: [...concurrency.targets]} : {})};
+    concurrency = {...concurrency, saving: true}; concurrencyError(''); concurrencyControls();
+    try {
+      const saved = await request(path, {method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+      if (features.every((name) => Number.isInteger(saved?.defaults?.[name]))) { concurrency = {...concurrency, config: saved}; byId('concurrency-default-summary').textContent = `默认大模型 ${saved.defaults.reason} · 生图 ${saved.defaults.image_gen}；账号可分别覆盖。`; }
+      concurrency = {...concurrency, saving: false, dirty: false}; closeConcurrency();
+      feedback('并发设置已保存。新请求使用新上限，执行中请求会自然结束。');
+      window.ConsoleUI?.toast('并发设置已保存', {tone: 'success'});
+      await loadAccounts();
+    } catch (cause) {
+      const uncertain = cause.name === 'AbortError' || cause instanceof TypeError;
+      concurrency = {...concurrency, conflict: cause.status === 409 || uncertain};
+      concurrencyError(cause.status === 409 ? '配置已被其他操作更新。输入已保留，请载入最新配置后重新编辑。' : uncertain ? '连接中断，保存结果尚未确认。输入已保留，请载入最新配置核对结果后再操作。' : cause instanceof SessionExpired ? '登录已过期，输入已保留，请重新登录。' : cause.message, !state.expired);
+    } finally { concurrency = {...concurrency, saving: false}; concurrencyControls(); }
+  }
+  async function refreshModels() {
+    if (modelBusy || state.expired || !accounts().length) return;
+    modelBusy = true; syncSelection(); error();
+    try { applySnapshot(await request('/local-console/accounts/models/refresh', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'}, 180000)); feedback('模型目录已更新；目录查询不等于实际模型调用验证。'); }
+    catch (cause) { if (!(cause instanceof SessionExpired)) error('模型目录刷新未完成，请稍后更新本地视图检查结果。'); }
+    finally { modelBusy = false; syncSelection(); }
+  }
 
   byId('display-timezone').textContent = `时间按 ${dateFormat.resolvedOptions().timeZone} 显示。`;
 
@@ -110,7 +278,7 @@
     const fallback = value?.available === true && ['unknown', 'stale'].includes(status);
     const text = reasonBlocked ? `大模型：${schedulerStateLabels[status]}` : `${schedulerStateLabels[status]}${fallback ? ' · 兜底' : ''}`;
     const badge = el('span', 'scheduler-state', text);
-    badge.dataset.tone = ['ready', 'available', 'active'].includes(status) ? 'ready' : ['expired', 'auth_error'].includes(status) ? 'error' : ['exhausted', 'cooldown', 'reset_pending', 'rechecking', 'reserved'].includes(status) ? 'waiting' : 'unknown';
+    badge.dataset.tone = ['ready', 'available', 'active'].includes(status) ? 'ready' : ['expired', 'auth_error'].includes(status) ? 'error' : ['exhausted', 'cooldown', 'reset_pending', 'rechecking', 'reserved', 'concurrency_full', 'draining'].includes(status) ? 'waiting' : 'unknown';
     return badge;
   }
 
@@ -219,7 +387,7 @@
   }
 
   function filteredAccounts() {
-    return accounts().filter((account) => (state.filter === 'all' || accountStatus(account) === state.filter) && String(account.label || '').toLocaleLowerCase().includes(state.query.toLocaleLowerCase()));
+    return accounts().filter((account) => (!importFilter || importFilter.has(account.id)) && (state.filter === 'all' || accountStatus(account) === state.filter) && String(account.label || '').toLocaleLowerCase().includes(state.query.toLocaleLowerCase()));
   }
 
   function renderSummary() {
@@ -239,6 +407,7 @@
   }
 
   function updateControls() {
+    if (concurrencyDialog.open) concurrencyControls(); else syncSelection();
     const list = accounts();
     ui['refresh-all'].disabled = !state.snapshot || list.length === 0 || list.every((account) => Boolean(refreshReason(account)));
     ui['refresh-all'].textContent = state.busy === '*' ? '正在刷新额度…' : state.busy ? '账号刷新中…' : '刷新全部额度 ↻';
@@ -446,7 +615,7 @@
 
   function detailModels(account) {
     const models = account.local_usage?.models;
-    if (!Array.isArray(models) || !models.length) return [el('p', 'detail-empty', '还没有模型调用记录。通过此服务调用后，记录会显示在这里。')];
+    if (!Array.isArray(models) || !models.length) return [modelCatalogDetails(account), el('p', 'detail-empty', '还没有模型调用记录。通过此服务调用后，记录会显示在这里。')];
     const wrapper = el('div', 'detail-model-table-wrap');
     const table = el('table', 'detail-table detail-model-table');
     table.setAttribute('aria-label', '该账号的本地模型调用记录');
@@ -464,7 +633,7 @@
       body.append(row);
     });
     table.append(head, body); wrapper.append(table);
-    return [wrapper, el('p', 'detail-context-note', '记录仅覆盖本地调用；上游声明的模型名称不能证明实际底层模型身份。')];
+    return [modelCatalogDetails(account), wrapper, el('p', 'detail-context-note', '记录仅覆盖本地调用；上游声明的模型名称不能证明实际底层模型身份。')];
   }
 
   function accountDetails(account, index) {
@@ -517,7 +686,7 @@
 
   function rowsSignature(filtered = filteredAccounts()) {
     return JSON.stringify([filtered, state.snapshot?.scheduler?.accounts, state.snapshot?.scheduler?.enabled,
-      state.query, state.filter, state.busy, state.expired, [...state.expanded], state.detailTabs, [...state.disclosures]]);
+      state.query, state.filter, [...selection], concurrency.saving, concurrency.config?.revision, state.busy, state.expired, [...state.expanded], state.detailTabs, [...state.disclosures]]);
   }
 
   function renderRows(revealedId = null) {
@@ -543,7 +712,12 @@
       const identityText = el('div', 'account-identity-text');
       identityText.append(el('span', 'account-name', account.label || `账号 ${index + 1}`));
       if (finite(account.token_count)) identityText.append(el('span', 'account-meta', `${count(account.token_count)} 份关联凭据`));
-      identity.append(avatar, identityText); cells[0].append(identity);
+      identityText.append(lunaBadge(account));
+      const checkLabel = el('label', 'account-select-control account-row-select'), checkbox = el('input');
+      checkbox.type = 'checkbox'; checkbox.checked = selection.has(account.id); checkbox.dataset.selectAccount = account.id; checkbox.dataset.focusKey = `select:${account.id}`;
+      checkbox.setAttribute('aria-label', `选择 ${account.label || '账号'}`);
+      checkbox.addEventListener('change', () => { selection = checkbox.checked ? new Set([...selection, account.id]) : new Set([...selection].filter((id) => id !== account.id)); syncSelection(); });
+      checkLabel.append(checkbox); identity.append(checkLabel, identityText); cells[0].append(identity);
       const badge = el('span', 'account-state');
       const statusNote = el('span', 'quota-note');
       cells[1].append(badge, statusNote);
@@ -554,8 +728,8 @@
         statusNote.textContent = status === 'error' ? '展开查看原因' : status === 'stale' ? '保留上次返回值' : status === 'expired' ? '请更新账号凭据' : '';
         statusNote.hidden = !statusNote.textContent;
       });
-      cells[2].append(quotaContent(account, account.features?.reason), schedulerContent(account, 'reason'));
-      cells[3].append(quotaContent(account, account.features?.image_gen), schedulerContent(account, 'image_gen'));
+      cells[2].append(quotaContent(account, account.features?.reason), schedulerContent(account, 'reason'), concurrencyContent(account, 'reason'));
+      cells[3].append(quotaContent(account, account.features?.image_gen), schedulerContent(account, 'image_gen'), concurrencyContent(account, 'image_gen'));
       const usage = account.local_usage?.windows?.last_24h;
       cells[4].append(el('div', 'usage-primary', `${count(usage?.attempts)} 次调用`), el('p', 'usage-secondary', `成功 ${count(usage?.succeeded)} · 失败 ${count(usage?.failed)}`), el('p', 'usage-secondary', `生成图片 ${count(usage?.generated_images)} 张`));
       const updated = el('time', '', timestamp(account.checked_at) === null ? '未查询' : shortDateFormat.format(timestamp(account.checked_at)));
@@ -575,7 +749,8 @@
         const expanded = state.expanded.has(account.id) ? new Set([...state.expanded].filter((id) => id !== account.id)) : new Set([...state.expanded, account.id]);
         state = { ...state, expanded }; renderRows(expanded.has(account.id) ? account.id : null);
       });
-      actions.append(refreshButton, detailsButton); cells[6].append(actions); row.append(...cells); fragment.append(row);
+      const settings = el('button', 'button button-quiet', '设置并发'); settings.type = 'button'; settings.dataset.concurrencyAccount = account.id; settings.dataset.focusKey = `concurrency:${account.id}`; settings.setAttribute('aria-label', `设置 ${account.label || '账号'} 的并发`); settings.addEventListener('click', () => openConcurrency('account', [account.id]));
+      actions.append(refreshButton, settings, detailsButton); cells[6].append(actions); row.append(...cells); fragment.append(row);
       const detailRow = el('tr', 'account-detail-row'); detailRow.id = `account-details-${index}`; detailRow.hidden = !isExpanded;
       if (isExpanded) {
         const cell = el('td'); cell.colSpan = 7;
@@ -590,7 +765,7 @@
     ui['accounts-empty'].hidden = !state.snapshot || filtered.length > 0;
     const resultCount = state.snapshot ? `${filtered.length} / ${accounts().length} 个账号` : '尚未载入';
     if (byId('accounts-count').textContent !== resultCount) byId('accounts-count').textContent = resultCount;
-    const activeFilters = [state.query ? `标签含「${state.query}」` : '', state.filter !== 'all' ? statusLabels[state.filter] : ''].filter(Boolean);
+    const activeFilters = [importFilter ? `本次导入 ${importFilter.size} 个账号` : '', state.query ? `标签含「${state.query}」` : '', state.filter !== 'all' ? statusLabels[state.filter] : ''].filter(Boolean);
     byId('account-filter-feedback').hidden = activeFilters.length === 0;
     byId('active-account-filters').textContent = activeFilters.join(' · ');
     const noAccounts = accounts().length === 0;
@@ -617,7 +792,7 @@
           const retry = Number(response.headers.get('Retry-After'));
           if (Number.isFinite(retry) && retry > 0) state = { ...state, blockedUntil: Date.now() + retry * 1000 };
         }
-        throw new Error(typeof data?.detail === 'string' ? data.detail : `请求失败（HTTP ${response.status}），请稍后重试。`);
+        throw Object.assign(new Error(typeof data?.detail === 'string' ? data.detail : `请求失败（HTTP ${response.status}），请稍后重试。`), {status: response.status});
       }
       return data;
     } finally { window.clearTimeout(timer); }
@@ -625,6 +800,12 @@
 
   function applySnapshot(snapshot) {
     if (!snapshot || !Array.isArray(snapshot.accounts) || !snapshot.accounts.every((account) => account && typeof account === 'object' && typeof account.id === 'string' && account.id.length > 0)) throw new Error('服务返回了无法识别的账号数据，请重试。');
+    const currentIds = new Set(snapshot.accounts.map((account) => account.id));
+    const removed = [...selection].filter((id) => !currentIds.has(id));
+    selection = new Set([...selection].filter((id) => currentIds.has(id)));
+    if (removed.length) feedback(`${removed.length} 个账号已移除，已取消选择。`);
+    const defaults = snapshot.scheduler?.concurrency?.defaults;
+    if (features.every((feature) => Number.isInteger(defaults?.[feature]))) byId('concurrency-default-summary').textContent = `默认大模型 ${defaults.reason} · 生图 ${defaults.image_gen}；账号可分别覆盖。`;
     state = { ...state, snapshot, loadedAt: Date.now() };
     renderRows();
     schedulePoll();
@@ -677,9 +858,10 @@
     }
   }
 
-  ui['account-search'].addEventListener('input', () => { state = { ...state, query: ui['account-search'].value.trim() }; renderRows(); });
-  ui['account-status-filter'].addEventListener('change', () => { state = { ...state, filter: ui['account-status-filter'].value }; renderRows(); });
+  ui['account-search'].addEventListener('input', () => { selection = new Set(); state = { ...state, query: ui['account-search'].value.trim() }; renderRows(); });
+  ui['account-status-filter'].addEventListener('change', () => { selection = new Set(); state = { ...state, filter: ui['account-status-filter'].value }; renderRows(); });
   function clearFilters() {
+    selection = new Set(); importFilter = null;
     state = { ...state, query: '', filter: 'all' };
     ui['account-search'].value = ''; ui['account-status-filter'].value = 'all';
     renderRows(); ui['account-search'].focus();
@@ -710,5 +892,20 @@
   window.setInterval(() => {
     if (!document.hidden && state.snapshot?.scheduler?.enabled !== true && state.snapshot?.auto_refresh_seconds > 0 && !state.busy && !state.loading && !state.expired) void loadAccounts(true);
   }, 30000);
+  byId('concurrency-defaults').addEventListener('click', () => openConcurrency('defaults'));
+  byId('concurrency-batch').addEventListener('click', () => openConcurrency('batch', [...selection]));
+  byId('accounts-select-all').addEventListener('change', () => {
+    const ids = filteredAccounts().map((account) => account.id);
+    selection = byId('accounts-select-all').checked ? new Set([...selection, ...ids]) : new Set([...selection].filter((id) => !ids.includes(id)));
+    renderRows();
+  });
+  byId('accounts-clear-selection').addEventListener('click', () => { selection = new Set(); renderRows(); });
+  byId('concurrency-form').addEventListener('submit', saveConcurrency);
+  byId('concurrency-cancel').addEventListener('click', closeConcurrency);
+  byId('concurrency-reload').addEventListener('click', () => { void readConcurrency(); });
+  concurrencyDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeConcurrency(); });
+  for (const feature of features) for (const [suffix, type] of [['mode', 'change'], ['value', 'input']]) byId(`concurrency-${feature}-${suffix}`).addEventListener(type, () => { concurrency = {...concurrency, dirty: true}; concurrencyControls(); });
+  byId('models-refresh-all').addEventListener('click', () => { void refreshModels(); });
+  window.addEventListener('beforeunload', (event) => { if (concurrencyDialog.open && concurrency.dirty) { event.preventDefault(); event.returnValue = ''; } });
   void loadAccounts();
 })();
