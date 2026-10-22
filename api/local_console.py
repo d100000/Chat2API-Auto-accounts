@@ -195,10 +195,10 @@ async def console_boundary(request: Request, call_next):
                 return RedirectResponse("/login", status_code=303)
             return JSONResponse({"detail": "请先登录本地测试台。"}, 401)
         mutating = request.method not in {"GET", "HEAD", "OPTIONS"} or management_path.startswith("/tokens/add/")
-        if mutating:
-            origin = request.headers.get("origin", "")
-            if origin != f"http://{request.headers.get('host')}":
-                return JSONResponse({"detail": "请求来源校验失败，请从本地测试页面操作。"}, 403)
+        origin = request.headers.get("origin")
+        expected_origin = f"http://{request.headers.get('host')}"
+        if (origin is not None or mutating) and origin != expected_origin:
+            return JSONResponse({"detail": "请求来源校验失败，请从本地测试页面操作。"}, 403)
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -283,6 +283,9 @@ async def with_local_usage(snapshot):
             for account in snapshot["accounts"]]}
     snapshot = {**snapshot, "scheduler": {**scheduler_state,
         "enabled": scheduling.enabled() and configs.auto_seed and bool(configs.authorization_list)}}
+    profiles = account_quota.get_account_profiles()
+    snapshot = {**snapshot, "accounts": [{**account, "profile": profiles.get(account["id"], {})}
+                                         for account in snapshot["accounts"]]}
     try:
         store = await asyncio.to_thread(account_usage.get_store)
         summaries = await asyncio.to_thread(store.summaries, [account["id"] for account in snapshot["accounts"]])

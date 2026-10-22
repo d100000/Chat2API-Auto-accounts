@@ -23,6 +23,7 @@ jobs:
           node tests/test_dashboard_ui.cjs
           node tests/test_connection_ui.cjs
           node tests/test_account_concurrency_ui.cjs
+          node tests/test_account_columns_ui.cjs
           node tests/test_tokens_concurrency_ui.cjs
       - uses: actions/setup-python@v5
         with:

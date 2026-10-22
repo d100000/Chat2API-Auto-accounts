@@ -31,6 +31,8 @@ _NAMES = {"name", "feature_name", "model", "model_slug", "type", "limit_type", "
 _DATES = {"reset_after", "reset_at", "reset", "resets_at"}
 _BOOLS = {"blocked", "is_blocked", "allowed", "limit_reached"}
 _NESTED = {"window", "windows", "primary_window", "secondary_window", "rate_limit", "limits"}
+_PLANS = frozenset({"free", "plus", "pro", "team", "business", "enterprise", "edu", "go"})
+_FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _number(value):
@@ -116,6 +118,82 @@ def account_identity(token: str, account_override=None):
         from utils import globals as state
         refresh_map = state.refresh_map
     return _identity(token, account_override, refresh_map)
+
+
+def _email(value):
+    """Only a bounded ordinary email address, never arbitrary claim content."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not 3 <= len(value) <= 254 or value.count("@") != 1:
+        return None
+    local, domain = value.split("@")
+    if (not 1 <= len(local) <= 64 or local.startswith(".") or local.endswith(".") or ".." in local
+            or not re.fullmatch(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+", local)):
+        return None
+    labels = domain.split(".")
+    if len(labels) < 2 or any(not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                              for label in labels):
+        return None
+    return value
+
+
+def _safe_fingerprint(value):
+    return value if isinstance(value, str) and _FINGERPRINT.fullmatch(value) else None
+
+
+def _credential_fingerprint(group):
+    # Bind a successful check to the actual access credential and workspace.
+    # Refresh-token cache timestamps and JWT claims are not proof of a check.
+    return hashlib.sha256((group["access"] + "\0" + (group["upstream_account"] or "")).encode()).hexdigest()
+
+
+def _profile(group, record, now):
+    """Private admin presentation. Never merge this into identity/quota rows.
+
+    JWT signatures are not verified here. Even a successful quota request does
+    not turn the JWT's email, plan, iat or exp labels into verified assertions.
+    """
+    credential, override = _split_token(group["token"])
+    claims = _claims(group["access"])
+    namespace = claims.get("https://api.openai.com/profile")
+    namespace = namespace if isinstance(namespace, dict) else {}
+    auth = claims.get("https://api.openai.com/auth")
+    auth = auth if isinstance(auth, dict) else {}
+    email = _email(namespace.get("email"))
+    email_source = "jwt_profile" if email is not None else None
+    if email is None:
+        email = _email(claims.get("email"))
+        email_source = "jwt_top_level" if email is not None else None
+    plan_value = auth.get("chatgpt_plan_type")
+    plan_value = plan_value.strip().lower() if isinstance(plan_value, str) and len(plan_value) <= 64 else None
+    claim_account = _name(auth.get("chatgpt_account_id")) or _name(claims.get("account_id"))
+    workspace_mismatch = bool(override and override != claim_account)
+    plan = plan_value if plan_value in _PLANS and not workspace_mismatch else "unknown"
+    plan_source = "jwt_auth" if plan_value and not workspace_mismatch else None
+    token_type = "refresh_token" if len(credential) == 45 else "access_token" if claims else "opaque"
+    fingerprint = _credential_fingerprint(group)
+    verified = _number(record.get("checked_at"))
+    if record.get("verified_credential_fingerprint") != fingerprint or verified is None or verified > now:
+        verified = None
+    current_error = bool(record.get("error") and record.get("attempted_credential_fingerprint") == fingerprint)
+    credential_status = group["identity"]["credential_status"]
+    authorization = ("expired" if credential_status == "expired" else
+                     "error" if credential_status == "error" or current_error else
+                     "unverified" if verified is None else
+                     "verification_stale" if now - verified >= STALE_AFTER else "verified_recently")
+    return {"email": email, "plan": plan, "email_source": email_source, "plan_source": plan_source,
+            "email_trust": "unverified_claim" if email_source else "unknown",
+            "plan_trust": "unverified_claim" if plan_source else "unknown", "claims_verified": False,
+            "plan_scope": "workspace_mismatch" if workspace_mismatch else "credential_account" if plan_source else "unknown",
+            "token_type": token_type, "token_type_source": "local_format",
+            "auth_method": "refresh_token" if token_type == "refresh_token" else "bearer_token" if token_type == "access_token" else "unknown",
+            "issued_at": _iso(_number(claims.get("iat"))), "issued_at_source": "jwt_iat" if _iso(_number(claims.get("iat"))) else None,
+            "expires_at": group["identity"]["credential_expires_at"],
+            "expires_at_source": "jwt_exp" if group["identity"]["credential_expires_at"] else None,
+            "expiry_subject": "access_token" if claims else None,
+            "last_verified_at": _iso(verified), "verification_source": "quota_endpoint" if verified is not None else None,
+            "authorization_status": authorization}
 
 
 def _safe_fields(value, depth=0):
@@ -267,6 +345,8 @@ class AccountQuotaService:
                                     **saved.get("windows", {})}) if isinstance(saved, dict) else None
                 safe[key] = {"payload": payload, "checked_at": _number(record.get("checked_at")),
                              "last_attempt_at": _number(record.get("last_attempt_at")),
+                             "verified_credential_fingerprint": _safe_fingerprint(record.get("verified_credential_fingerprint")),
+                             "attempted_credential_fingerprint": _safe_fingerprint(record.get("attempted_credential_fingerprint")),
                              "last_result": "refreshed" if payload is not None and not record.get("error") else "failed",
                              "error": self._safe_error(record.get("error"))}
             except (ValueError, TypeError, AttributeError, QuotaReadError):
@@ -348,6 +428,15 @@ class AccountQuotaService:
         return {"source": SOURCE, "generated_at": _iso(now), "refresh_interval_seconds": REFRESH_INTERVAL,
                 "stale_after_seconds": STALE_AFTER, "cache_persistence_error": self._cache_error, "accounts": accounts}
 
+    def get_account_profiles(self):
+        """PII-bearing metadata for authenticated local administration only.
+
+        Keep this separate from get_accounts(), scheduler snapshots, model
+        discovery and usage identity. This method performs no network request.
+        """
+        now = self._clock()
+        return {key: _profile(group, self._records.get(key, {}), now) for key, group in self._groups().items()}
+
     async def refresh(self, account_id=None):
         groups = self._groups()
         if account_id is not None and account_id not in groups:
@@ -369,7 +458,9 @@ class AccountQuotaService:
         try:
             async with self._semaphore:
                 now = self._clock()
-                self._records = {**self._records, key: {**old, "last_attempt_at": now, "last_result": "in_progress"}}
+                fingerprint = _credential_fingerprint(group)
+                self._records = {**self._records, key: {**old, "last_attempt_at": now, "last_result": "in_progress",
+                                                      "attempted_credential_fingerprint": fingerprint}}
                 self._save()
                 try:
                     if group["identity"]["credential_status"] == "expired":
@@ -379,9 +470,11 @@ class AccountQuotaService:
                     raw = await asyncio.wait_for(self._fetcher(group["access"], group["upstream_account"], group["token"]), timeout=25)
                     payload = _payload(raw)
                     record = {"payload": payload, "checked_at": self._clock(), "last_attempt_at": now,
+                              "verified_credential_fingerprint": fingerprint, "attempted_credential_fingerprint": fingerprint,
                               "last_result": "refreshed", "error": None}
                 except asyncio.CancelledError:
                     self._records = {**self._records, key: {**old, "last_attempt_at": now, "last_result": "failed",
+                                     "attempted_credential_fingerprint": fingerprint,
                                      "error": self._safe_error({"code": "cancelled"})}}
                     self._save()
                     raise
@@ -392,6 +485,7 @@ class AccountQuotaService:
                         timed_out = isinstance(error, (TimeoutError, asyncio.TimeoutError)) or getattr(error, "code", None) == 28
                         code, status = ("timeout" if timed_out else "network_error"), None
                     record = {**old, "last_attempt_at": now,
+                              "attempted_credential_fingerprint": fingerprint,
                               "last_result": {"expired_token": "expired", "unsupported_token": "unsupported"}.get(code, "failed"),
                               "error": self._safe_error({"code": code, "http_status": status})}
                 self._records = {**self._records, key: record}
@@ -415,6 +509,10 @@ def _default_service():
 
 def get_accounts():
     return _default_service().get_accounts()
+
+
+def get_account_profiles():
+    return _default_service().get_account_profiles()
 
 
 async def refresh(account_id=None):

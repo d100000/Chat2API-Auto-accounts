@@ -58,6 +58,137 @@
   let importFilter = importedIds ? new Set(importedIds.split(',').filter((id) => /^acct_[0-9a-f]{24}$/.test(id)).slice(0, 500)) : null;
   if (importFilter && !importFilter.size) importFilter = null;
 
+  const columnDefinitions = [
+    {id: 'identity', label: '账号', width: 176, fixed: true},
+    {id: 'email', label: '邮箱', width: 224}, {id: 'plan', label: '等级', width: 104},
+    {id: 'authorization', label: '授权状态 / 到期', width: 180},
+    {id: 'snapshot', label: '额度快照', width: 132},
+    {id: 'reason_remaining', label: '大模型剩余', width: 132},
+    {id: 'reason_reset', label: '大模型重置', width: 160},
+    {id: 'image_remaining', label: '生图剩余', width: 132},
+    {id: 'image_reset', label: '生图重置', width: 160},
+    {id: 'concurrency', label: '并发 · 使用 / 上限', width: 180},
+    {id: 'luna', label: 'Luna 核查', width: 224},
+    {id: 'requests_24h', label: '24h 请求', width: 136},
+    {id: 'images_24h', label: '24h 图片', width: 124},
+    {id: 'updated_at', label: '上游更新', width: 160},
+    {id: 'actions', label: '操作', width: 148, fixed: true},
+  ];
+  const defaultColumns = ['email', 'plan', 'authorization', 'reason_remaining', 'reason_reset', 'image_remaining', 'image_reset', 'concurrency', 'requests_24h'];
+  const columnStorageKey = 'chat2api.accounts.columns.v1';
+  const configurableColumns = columnDefinitions.filter((column) => !column.fixed).map((column) => column.id);
+  const columnsDialog = byId('account-columns-dialog');
+  let columnNotice = '', columnDraft = new Set(), columnOpener = null;
+  let visibleColumns = readColumns();
+  function readColumns() {
+    try {
+      const raw = window.localStorage.getItem(columnStorageKey);
+      if (raw === null) return [...defaultColumns];
+      const saved = JSON.parse(raw);
+      const valid = Array.isArray(saved) ? configurableColumns.filter((id) => saved.includes(id)) : [];
+      if (valid.length) return valid;
+      columnNotice = '已恢复默认列：之前保存的列设置无效。';
+    } catch (_) { columnNotice = '无法读取浏览器列设置，已使用默认列；仍可在本次页面中调整。'; }
+    return [...defaultColumns];
+  }
+  function shownColumns() { return columnDefinitions.filter((column) => column.fixed || visibleColumns.includes(column.id)); }
+  function renderColumnHeader() {
+    const shown = shownColumns(), head = byId('accounts-table-head'), group = byId('accounts-colgroup');
+    head.replaceChildren(); group.replaceChildren();
+    for (const column of shown) {
+      const th = el('th', '', column.label); th.setAttribute('scope', 'col'); th.dataset.column = column.id;
+      const col = el('col'); col.dataset.column = column.id; col.setAttribute('style', `width:${column.width}px`);
+      head.append(th); group.append(col);
+    }
+    byId('accounts-table').setAttribute('style', `min-width:${shown.reduce((sum, column) => sum + column.width, 0)}px`);
+    byId('accounts-columns-notice').textContent = columnNotice;
+    byId('accounts-columns-notice').hidden = !columnNotice;
+  }
+  function syncColumnDraft() {
+    byId('account-columns-count').textContent = `已选 ${columnDraft.size} / ${configurableColumns.length} 个可选列`;
+    byId('account-columns-apply').disabled = !columnDraft.size;
+    byId('account-columns-error').textContent = columnDraft.size ? '' : '至少保留一个数据列。';
+    byId('account-columns-error').hidden = Boolean(columnDraft.size);
+    byId('account-columns-options').querySelectorAll('[data-column-option]').forEach((input) => {
+      input.checked = input.disabled || columnDraft.has(input.dataset.columnOption);
+    });
+  }
+  function openColumns() {
+    columnDraft = new Set(visibleColumns); columnOpener = document.activeElement;
+    const options = byId('account-columns-options'); options.replaceChildren();
+    for (const column of columnDefinitions) {
+      const label = el('label', 'account-column-option'), input = el('input');
+      input.type = 'checkbox'; input.disabled = Boolean(column.fixed); input.dataset.columnOption = column.id;
+      input.addEventListener('change', () => {
+        columnDraft = input.checked ? new Set([...columnDraft, column.id]) : new Set([...columnDraft].filter((id) => id !== column.id));
+        syncColumnDraft();
+      });
+      label.append(input, el('span', '', column.label));
+      if (column.fixed) label.append(el('span', 'subtle-label', '固定'));
+      options.append(label);
+    }
+    syncColumnDraft(); columnsDialog.showModal();
+  }
+  function closeColumns() {
+    columnsDialog.close();
+    (columnOpener?.isConnected ? columnOpener : byId('accounts-columns')).focus();
+  }
+  function applyColumns(event) {
+    event.preventDefault();
+    if (!columnDraft.size) { syncColumnDraft(); return; }
+    visibleColumns = configurableColumns.filter((id) => columnDraft.has(id));
+    columnNotice = '';
+    try { window.localStorage.setItem(columnStorageKey, JSON.stringify(visibleColumns)); }
+    catch (_) { columnNotice = '列设置已应用到本次页面，但浏览器无法保存；重新打开后将使用之前的设置。'; }
+    renderColumnHeader(); renderRows(); closeColumns();
+    feedback(columnNotice || '显示列已更新，仅保存在当前浏览器。');
+  }
+
+  const planLabels = {free: 'Free', plus: 'Plus', pro: 'Pro', team: 'Team', business: 'Business', enterprise: 'Enterprise', edu: 'Edu', go: 'Go'};
+  const authorizationLabels = {unverified: '未核验', verified_recently: '近期已核验', verification_stale: '核验已过期', expired: '凭据已过期', error: '核验失败'};
+  const tokenLabels = {access_token: 'Access', refresh_token: 'Refresh', opaque: '未知类型'};
+  function profileSource(trust) { return trust === 'unverified_claim' ? '凭据声明' : trust === 'upstream_response' ? '上游返回' : '来源未知'; }
+  function cellLines(primary, secondary = '', title = '') {
+    const box = el('div', 'account-cell-lines'), first = el('span', 'account-cell-primary', primary);
+    first.title = title || String(primary); box.append(first);
+    if (secondary) { const second = el('span', 'account-cell-secondary', secondary); second.title = String(secondary); box.append(second); }
+    return box;
+  }
+  function compactQuota(account, featureName) {
+    const feature = account.features?.[featureName], box = el('div', 'account-cell-lines');
+    const value = el('div', 'account-quota-line'), amount = el('strong', '', finite(feature?.remaining) ? count(feature.remaining) : '未知');
+    const old = el('span', 'quota-old-tag', '旧值'), status = el('span', 'account-cell-secondary');
+    value.append(amount, old); box.append(value, status);
+    timed(() => {
+      const stale = staleValue(account, feature); old.hidden = !stale || !finite(feature?.remaining);
+      value.classList.toggle('is-stale', stale);
+      const scheduling = schedulerFeature(account, featureName);
+      status.textContent = feature?.blocked ? '上游受限' : !finite(feature?.remaining) ? '上游未返回' : scheduling ? schedulerStateLabels[schedulerState(scheduling)] : '上游快照';
+      status.title = `${status.textContent}；${stale ? '当前为旧快照，请刷新确认。' : ''}${finite(feature?.total) ? `总量 ${count(feature.total)}；` : ''}${finite(feature?.used) ? `已用 ${count(feature.used)}；` : ''}`;
+    });
+    return box;
+  }
+  function compactReset(feature) {
+    const box = el('div', 'account-cell-lines'), reset = timestamp(feature?.reset_at);
+    if (reset === null) { box.append(el('span', 'account-cell-secondary', '未提供')); return box; }
+    const absolute = el('time', 'account-cell-primary', shortDateFormat.format(reset)), relative = el('span', 'account-cell-secondary');
+    absolute.dateTime = new Date(reset).toISOString(); absolute.title = dateText(reset); box.append(absolute, relative);
+    timed(() => { relative.textContent = Date.now() >= reset ? '已到期 · 待核验' : `距重置 ${countdown(reset - Date.now())}`; relative.classList.toggle('is-warning', Date.now() >= reset); });
+    return box;
+  }
+  function compactConcurrency(account) {
+    const box = el('div', 'account-cell-lines');
+    for (const [feature, name] of [['reason', '聊天'], ['image_gen', '生图']]) {
+      const value = runtimeConcurrency(account, feature), active = value?.in_flight ?? value?.active;
+      const hint = value?.state === 'draining' ? '待结束' : value?.state === 'full' ? '已满' : '';
+      const line = el('span', 'account-concurrency-line', value ? `${name} ${count(active)} / ${count(value.limit)}${hint ? ` · ${hint}` : ''}` : `${name} 未提供`);
+      line.dataset.state = value?.state || 'unknown';
+      line.title = `${name}并发：${value?.source === 'account' ? '账号自定义' : '继承默认'}${value?.state === 'draining' ? '；等待现有请求结束' : ''}${value?.conflict ? '；身份归并冲突已采用较小上限' : ''}`;
+      box.append(line);
+    }
+    return box;
+  }
+
   function runtimeConcurrency(account, feature) {
     return account.concurrency?.[feature] || state.snapshot?.scheduler?.accounts?.[account.id]?.concurrency?.[feature] || null;
   }
@@ -387,7 +518,7 @@
   }
 
   function filteredAccounts() {
-    return accounts().filter((account) => (!importFilter || importFilter.has(account.id)) && (state.filter === 'all' || accountStatus(account) === state.filter) && String(account.label || '').toLocaleLowerCase().includes(state.query.toLocaleLowerCase()));
+    return accounts().filter((account) => (!importFilter || importFilter.has(account.id)) && (state.filter === 'all' || accountStatus(account) === state.filter) && [account.label, account.id, account.profile?.email].some((value) => String(value || '').toLocaleLowerCase().includes(state.query.toLocaleLowerCase())));
   }
 
   function renderSummary() {
@@ -420,7 +551,8 @@
       if (!account) return;
       const reason = refreshReason(account);
       button.disabled = Boolean(reason);
-      button.textContent = reason || '刷新额度';
+      button.textContent = '刷新';
+      button.title = reason || '刷新该账号的上游额度';
       button.setAttribute('aria-busy', String(state.busy === '*' || state.busy === account.id || account.refresh?.status === 'in_progress'));
     });
   }
@@ -539,10 +671,17 @@
     credential.append(el('strong', '', credentialLabels[account.credential_status] || '有效期未知'));
     credential.append(el('span', '', `${finite(account.token_count) ? count(account.token_count) : '—'} 份关联凭据`));
     identity.append(credential, definition([
-      ['声明到期', dateText(account.credential_expires_at)],
+      ['邮箱', account.profile?.email || '未提供'],
+      ['订阅等级', `${planLabels[account.profile?.plan] || '未知'} · ${profileSource(account.profile?.plan_trust)}`],
+      ['邮箱来源', profileSource(account.profile?.email_trust)],
+      ['授权核验', authorizationLabels[account.profile?.authorization_status] || '未核验'],
+      ['凭据类型', tokenLabels[account.profile?.token_type] || '未知类型'],
+      ['令牌签发时间', dateText(account.profile?.issued_at)],
+      ['Token 声明到期', dateText(account.profile?.expires_at || account.credential_expires_at)],
+      ['同凭据最近核验', dateText(account.profile?.last_verified_at)],
       ['上次成功查询', dateText(account.checked_at)], ['最近查询尝试', dateText(account.refresh?.last_attempt_at)],
       ['额度来源', 'ChatGPT 网页接口'],
-    ]), el('p', 'field-hint', '有效期来自凭据声明，不代表已通过实时认证。'));
+    ]), el('p', 'field-hint', '签发与到期时间来自 Token 声明，不代表完整 Session 授权期限；近期核验仅表示同凭据曾成功读取额度，不代表签名验证或全部功能权限。'));
     if (account.refresh?.error) identity.append(el('p', 'detail-error', `${account.refresh.error.message || '查询失败'}${finite(account.refresh.error.http_status) ? `（HTTP ${account.refresh.error.http_status}）` : ''}`));
     const local = section('本地调用统计');
     const table = usageTable(account.local_usage);
@@ -686,7 +825,7 @@
 
   function rowsSignature(filtered = filteredAccounts()) {
     return JSON.stringify([filtered, state.snapshot?.scheduler?.accounts, state.snapshot?.scheduler?.enabled,
-      state.query, state.filter, [...selection], concurrency.saving, concurrency.config?.revision, state.busy, state.expired, [...state.expanded], state.detailTabs, [...state.disclosures]]);
+      state.query, state.filter, visibleColumns, [...selection], concurrency.saving, concurrency.config?.revision, state.busy, state.expired, [...state.expanded], state.detailTabs, [...state.disclosures]]);
   }
 
   function renderRows(revealedId = null) {
@@ -706,54 +845,76 @@
       const row = el('tr', 'account-row');
       const isExpanded = state.expanded.has(account.id);
       row.classList.toggle('is-expanded', isExpanded);
-      const cells = ['账号', '快照状态', '大模型剩余 · reason', '生图剩余 · image_gen', '本地调用 · 近24小时', '上游更新', '操作'].map((label) => { const cell = el('td'); cell.dataset.label = label; return cell; });
-      const identity = el('div', 'account-identity');
-      const avatar = el('span', 'account-avatar', String(accounts().findIndex((item) => item.id === account.id) + 1).padStart(2, '0')); avatar.setAttribute('aria-hidden', 'true');
-      const identityText = el('div', 'account-identity-text');
-      identityText.append(el('span', 'account-name', account.label || `账号 ${index + 1}`));
-      if (finite(account.token_count)) identityText.append(el('span', 'account-meta', `${count(account.token_count)} 份关联凭据`));
-      identityText.append(lunaBadge(account));
-      const checkLabel = el('label', 'account-select-control account-row-select'), checkbox = el('input');
-      checkbox.type = 'checkbox'; checkbox.checked = selection.has(account.id); checkbox.dataset.selectAccount = account.id; checkbox.dataset.focusKey = `select:${account.id}`;
-      checkbox.setAttribute('aria-label', `选择 ${account.label || '账号'}`);
-      checkbox.addEventListener('change', () => { selection = checkbox.checked ? new Set([...selection, account.id]) : new Set([...selection].filter((id) => id !== account.id)); syncSelection(); });
-      checkLabel.append(checkbox); identity.append(checkLabel, identityText); cells[0].append(identity);
-      const badge = el('span', 'account-state');
-      const statusNote = el('span', 'quota-note');
-      cells[1].append(badge, statusNote);
-      timed(() => {
-        const status = accountStatus(account);
-        const pending = state.busy === '*' || state.busy === account.id || account.refresh?.status === 'in_progress';
-        badge.textContent = pending ? '刷新中' : statusLabels[status]; badge.dataset.state = pending ? 'unknown' : status;
-        statusNote.textContent = status === 'error' ? '展开查看原因' : status === 'stale' ? '保留上次返回值' : status === 'expired' ? '请更新账号凭据' : '';
-        statusNote.hidden = !statusNote.textContent;
+      const cells = shownColumns().map((column) => {
+        const cell = el('td'); cell.dataset.label = column.label; cell.dataset.column = column.id;
+        const profile = account.profile || {}, usage = account.local_usage?.windows?.last_24h;
+        if (column.id === 'identity') {
+          const identity = el('div', 'account-identity'), text = el('div', 'account-identity-text');
+          const name = el('span', 'account-name', account.label || `账号 ${index + 1}`); name.title = account.label || account.id;
+          text.append(name, el('span', 'account-meta', finite(account.token_count) ? `${count(account.token_count)} 份凭据` : '凭据数量未知'));
+          const label = el('label', 'account-select-control account-row-select'), checkbox = el('input');
+          checkbox.type = 'checkbox'; checkbox.checked = selection.has(account.id); checkbox.dataset.selectAccount = account.id; checkbox.dataset.focusKey = `select:${account.id}`;
+          checkbox.setAttribute('aria-label', `选择 ${account.label || '账号'}`);
+          checkbox.addEventListener('change', () => { selection = checkbox.checked ? new Set([...selection, account.id]) : new Set([...selection].filter((id) => id !== account.id)); syncSelection(); });
+          label.append(checkbox); identity.append(label, text); cell.append(identity);
+        } else if (column.id === 'email') {
+          cell.append(cellLines(profile.email || '未提供', profile.email ? profileSource(profile.email_trust) : '凭据未提供邮箱'));
+        } else if (column.id === 'plan') {
+          cell.append(cellLines(planLabels[profile.plan] || '未知', planLabels[profile.plan] ? profileSource(profile.plan_trust) : '等级未提供'));
+        } else if (column.id === 'authorization') {
+          const status = authorizationLabels[profile.authorization_status] || '未核验';
+          const expiry = timestamp(profile.expires_at || account.credential_expires_at);
+          const content = cellLines(`${status} · ${tokenLabels[profile.token_type] || '未知类型'}`, expiry === null ? 'Token 到期未知' : `${shortDateFormat.format(expiry)} 到期`, `${status}；核验仅表示同凭据最近成功读取额度，不代表签名验证或全部功能权限。`);
+          content.dataset.tone = ['error', 'expired'].includes(profile.authorization_status) ? 'error' : profile.authorization_status === 'verified_recently' ? 'success' : 'muted';
+          content.children[content.children.length - 1].title = `Token 声明到期：${dateText(profile.expires_at || account.credential_expires_at)}；不代表完整 Session 授权期限。`;
+          cell.append(content);
+        } else if (column.id === 'snapshot') {
+          const box = el('div', 'account-cell-lines'), badge = el('span', 'account-state'), note = el('span', 'account-cell-secondary'); box.append(badge, note); cell.append(box);
+          timed(() => {
+            const status = accountStatus(account), pending = state.busy === '*' || state.busy === account.id || account.refresh?.status === 'in_progress';
+            badge.textContent = pending ? '刷新中' : statusLabels[status]; badge.dataset.state = pending ? 'unknown' : status;
+            note.textContent = status === 'error' ? '详情查看原因' : status === 'stale' ? '保留上次返回值' : status === 'expired' ? '请更新账号凭据' : '上游额度快照';
+          });
+        } else if (column.id === 'reason_remaining' || column.id === 'image_remaining') {
+          cell.append(compactQuota(account, column.id === 'reason_remaining' ? 'reason' : 'image_gen'));
+        } else if (column.id === 'reason_reset' || column.id === 'image_reset') {
+          cell.append(compactReset(account.features?.[column.id === 'reason_reset' ? 'reason' : 'image_gen']));
+        } else if (column.id === 'concurrency') {
+          cell.append(compactConcurrency(account));
+        } else if (column.id === 'luna') {
+          const value = lunaStatus(account), check = accountCatalog(account).checks?.['gpt-6-luna'];
+          const content = cellLines(value.text, timestamp(check?.checked_at) !== null ? shortDateFormat.format(timestamp(check.checked_at)) : '尚无调用核查');
+          content.dataset.tone = value.tone; content.title = 'gpt-6-luna；目录列出不等于调用成功，响应标签不证明底层模型身份。'; cell.append(content);
+        } else if (column.id === 'requests_24h') {
+          cell.append(cellLines(count(usage?.attempts), `成功 ${count(usage?.succeeded)} · 失败 ${count(usage?.failed)}`));
+        } else if (column.id === 'images_24h') {
+          cell.append(cellLines(`${count(usage?.generated_images)} 张`, `生图请求 ${count(usage?.image_requests)}`));
+        } else if (column.id === 'updated_at') {
+          const stamp = timestamp(account.checked_at); cell.append(cellLines(stamp === null ? '未查询' : shortDateFormat.format(stamp), '最近成功读取额度', dateText(account.checked_at)));
+        } else if (column.id === 'actions') {
+          const actions = el('div', 'row-actions');
+          const refreshButton = el('button', 'button button-quiet refresh-account', '刷新');
+          refreshButton.type = 'button'; refreshButton.dataset.refreshAccount = account.id; refreshButton.dataset.focusKey = `refresh:${account.id}`;
+          refreshButton.setAttribute('aria-label', `刷新 ${account.label || '该账号'} 的额度`);
+          refreshButton.addEventListener('click', () => { void refreshAccounts(account.id); });
+          const detailsButton = el('button', 'button button-secondary details-toggle', isExpanded ? '收起' : '详情');
+          detailsButton.type = 'button'; detailsButton.dataset.focusKey = `details:${account.id}`;
+          detailsButton.setAttribute('aria-label', `${isExpanded ? '收起' : '展开'} ${account.label || '账号'} 的详情`);
+          detailsButton.setAttribute('aria-expanded', String(isExpanded)); detailsButton.setAttribute('aria-controls', `account-details-${index}`);
+          detailsButton.addEventListener('click', () => {
+            const expanded = state.expanded.has(account.id) ? new Set([...state.expanded].filter((id) => id !== account.id)) : new Set([...state.expanded, account.id]);
+            state = {...state, expanded}; renderRows(expanded.has(account.id) ? account.id : null);
+          });
+          const settings = el('button', 'button button-quiet', '并发'); settings.type = 'button'; settings.dataset.concurrencyAccount = account.id; settings.dataset.focusKey = `concurrency:${account.id}`;
+          settings.setAttribute('aria-label', `设置 ${account.label || '账号'} 的并发`); settings.addEventListener('click', () => openConcurrency('account', [account.id]));
+          actions.append(refreshButton, settings, detailsButton); cell.append(actions);
+        }
+        return cell;
       });
-      cells[2].append(quotaContent(account, account.features?.reason), schedulerContent(account, 'reason'), concurrencyContent(account, 'reason'));
-      cells[3].append(quotaContent(account, account.features?.image_gen), schedulerContent(account, 'image_gen'), concurrencyContent(account, 'image_gen'));
-      const usage = account.local_usage?.windows?.last_24h;
-      cells[4].append(el('div', 'usage-primary', `${count(usage?.attempts)} 次调用`), el('p', 'usage-secondary', `成功 ${count(usage?.succeeded)} · 失败 ${count(usage?.failed)}`), el('p', 'usage-secondary', `生成图片 ${count(usage?.generated_images)} 张`));
-      const updated = el('time', '', timestamp(account.checked_at) === null ? '未查询' : shortDateFormat.format(timestamp(account.checked_at)));
-      if (timestamp(account.checked_at) !== null) { updated.dateTime = new Date(timestamp(account.checked_at)).toISOString(); updated.title = dateText(account.checked_at); }
-      cells[5].append(updated);
-      const actions = el('div', 'row-actions');
-      const refreshButton = el('button', 'button button-quiet refresh-account', '刷新额度');
-      refreshButton.type = 'button'; refreshButton.dataset.refreshAccount = account.id; refreshButton.dataset.focusKey = `refresh:${account.id}`;
-      refreshButton.setAttribute('aria-label', `刷新 ${account.label || '该账号'} 的额度`);
-      refreshButton.addEventListener('click', () => { void refreshAccounts(account.id); });
-      const detailsButton = el('button', 'button button-secondary details-toggle');
-      const chevron = el('span', 'details-chevron'); chevron.setAttribute('aria-hidden', 'true');
-      detailsButton.append(el('span', '', isExpanded ? '收起详情' : '展开详情'), chevron);
-      detailsButton.type = 'button'; detailsButton.dataset.focusKey = `details:${account.id}`;
-      detailsButton.setAttribute('aria-expanded', String(isExpanded)); detailsButton.setAttribute('aria-controls', `account-details-${index}`);
-      detailsButton.addEventListener('click', () => {
-        const expanded = state.expanded.has(account.id) ? new Set([...state.expanded].filter((id) => id !== account.id)) : new Set([...state.expanded, account.id]);
-        state = { ...state, expanded }; renderRows(expanded.has(account.id) ? account.id : null);
-      });
-      const settings = el('button', 'button button-quiet', '设置并发'); settings.type = 'button'; settings.dataset.concurrencyAccount = account.id; settings.dataset.focusKey = `concurrency:${account.id}`; settings.setAttribute('aria-label', `设置 ${account.label || '账号'} 的并发`); settings.addEventListener('click', () => openConcurrency('account', [account.id]));
-      actions.append(refreshButton, settings, detailsButton); cells[6].append(actions); row.append(...cells); fragment.append(row);
+      row.append(...cells); fragment.append(row);
       const detailRow = el('tr', 'account-detail-row'); detailRow.id = `account-details-${index}`; detailRow.hidden = !isExpanded;
       if (isExpanded) {
-        const cell = el('td'); cell.colSpan = 7;
+        const cell = el('td'); cell.colSpan = shownColumns().length;
         const details = accountDetails(account, index);
         details.classList.toggle('is-entering', account.id === revealedId);
         cell.append(details); detailRow.append(cell);
@@ -765,7 +926,7 @@
     ui['accounts-empty'].hidden = !state.snapshot || filtered.length > 0;
     const resultCount = state.snapshot ? `${filtered.length} / ${accounts().length} 个账号` : '尚未载入';
     if (byId('accounts-count').textContent !== resultCount) byId('accounts-count').textContent = resultCount;
-    const activeFilters = [importFilter ? `本次导入 ${importFilter.size} 个账号` : '', state.query ? `标签含「${state.query}」` : '', state.filter !== 'all' ? statusLabels[state.filter] : ''].filter(Boolean);
+    const activeFilters = [importFilter ? `本次导入 ${importFilter.size} 个账号` : '', state.query ? `账号或邮箱含「${state.query}」` : '', state.filter !== 'all' ? statusLabels[state.filter] : ''].filter(Boolean);
     byId('account-filter-feedback').hidden = activeFilters.length === 0;
     byId('active-account-filters').textContent = activeFilters.join(' · ');
     const noAccounts = accounts().length === 0;
@@ -907,5 +1068,12 @@
   for (const feature of features) for (const [suffix, type] of [['mode', 'change'], ['value', 'input']]) byId(`concurrency-${feature}-${suffix}`).addEventListener(type, () => { concurrency = {...concurrency, dirty: true}; concurrencyControls(); });
   byId('models-refresh-all').addEventListener('click', () => { void refreshModels(); });
   window.addEventListener('beforeunload', (event) => { if (concurrencyDialog.open && concurrency.dirty) { event.preventDefault(); event.returnValue = ''; } });
+  byId('accounts-columns').addEventListener('click', openColumns);
+  byId('account-columns-all').addEventListener('click', () => { columnDraft = new Set(configurableColumns); syncColumnDraft(); });
+  byId('account-columns-default').addEventListener('click', () => { columnDraft = new Set(defaultColumns); syncColumnDraft(); });
+  byId('account-columns-cancel').addEventListener('click', closeColumns);
+  byId('account-columns-form').addEventListener('submit', applyColumns);
+  columnsDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeColumns(); });
+  renderColumnHeader();
   void loadAccounts();
 })();

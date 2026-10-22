@@ -204,7 +204,11 @@ python scripts/public_service.py stop
 
 ## 账号额度与本地用量
 
-登录后打开 `/accounts`，可以搜索账号、筛选状态、展开详情，并刷新单个或全部账号。账号以匿名标签显示；能够识别的工作区与用户组合用于合并同一账号的多个 Token，同一工作区内的不同用户分别统计。JWT 声明只用于标签、去重和有效期提示，不作为认证成功的证明。
+登录后打开 `/accounts`，可以按账号标签或邮箱搜索、筛选状态、展开详情，并刷新单个或全部账号。列表使用紧凑的横向表格，每格最多两行，分别展示邮箱、套餐、授权状态、大模型与生图余额、各自的重置时间、并发和近期调用。桌面固定账号与操作列，窄屏只固定账号列并支持横向滚动；「显示列」可以选择所需列并恢复默认，设置仅在当前浏览器保存列标识，不保存邮箱或账号资料。
+
+邮箱、Free / Plus / Pro 等套餐和 Token 签发、到期时间来自当前选中凭据的 JWT 声明，不额外请求上游个人资料。详情会显示来源；无法解析、缺失或工作区不匹配的套餐保持未知，不按额度推算等级。JWT 签名未在本地验证，声明不等于当前订阅或实时授权证明；Token 到期也不等于订阅到期。最近验证时间仅来自对同一份凭据、同一工作区成功查询额度的记录，更换凭据后需重新验证；旧缓存无法关联时显示未验证。
+
+账号仍使用匿名稳定标签；能够识别的工作区与用户组合用于合并同一账号的多个 Token，同一工作区内的不同用户分别统计。邮箱与套餐仅通过已登录的本机管理接口返回，不进入公开模型目录、调度状态或用量账本，也不额外写入额度缓存。
 
 这部分由四个模块组成：
 
@@ -427,6 +431,7 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 node tests/test_dashboard_ui.cjs
 node tests/test_connection_ui.cjs
 node tests/test_account_concurrency_ui.cjs
+node tests/test_account_columns_ui.cjs
 node tests/test_tokens_concurrency_ui.cjs
 for file in static/local-console/*.js; do node --check "$file"; done
 ```

@@ -263,6 +263,31 @@ class LocalConsoleHTTPTests(unittest.TestCase):
         self.assertEqual(self.client.get(self.base + "/local-console/accounts").status_code, 400)
         self.assertEqual(self.client.post(self.base + "/local-console/login", json=self.login).status_code, 400)
 
+    def test_private_reads_require_same_origin_when_origin_is_present(self):
+        self.log_in()
+        paths = ("/local-console/accounts", "/local-console/api-keys", "/local-console/dashboard")
+        for origin in ("http://127.0.0.1:5006", "null", "https://example.invalid"):
+            for path in paths:
+                with self.subTest(origin=origin, path=path):
+                    response = self.client.get(self.base + path, headers={"Origin": origin})
+                    self.assertEqual(response.status_code, 403)
+                    self.assertNotIn("profile", response.text)
+        # Browser navigation and non-browser clients may omit Origin. The
+        # authenticated cookie and local Host are still required on these reads.
+        self.client.headers.pop("Origin", None)
+        for path in paths:
+            self.assertEqual(self.client.get(self.base + path).status_code, 200, path)
+
+    def test_api_key_cannot_read_private_accounts_and_models_do_not_expose_profiles(self):
+        headers = {"Authorization": "Bearer " + self.api_key}
+        self.assertEqual(self.client.get(self.base + "/local-console/accounts", headers=headers).status_code, 401)
+        response = self.client.get(self.base + "/v1/models", headers={
+            **headers, "Origin": "https://example.invalid",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("profile", response.text)
+        self.assertNotIn("email", response.text)
+
     def test_empty_account_pool_and_input_validation(self):
         self.log_in()
         for stream in (False, True):

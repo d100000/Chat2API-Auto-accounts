@@ -7,9 +7,9 @@
   <title>账号与额度 · Chat2API</title>
   <script src="/static/local-console/theme.js?v=20261021g"></script>
   <link rel="stylesheet" href="/static/local-console/console.css?v=20261021g">
-  <link rel="stylesheet" href="/static/local-console/accounts.css?v=20261022a">
+  <link rel="stylesheet" href="/static/local-console/accounts.css?v=20261022b">
   <script src="/static/local-console/ui.js?v=20261021g" defer></script>
-  <script src="/static/local-console/accounts.js?v=20261022a" defer></script>
+  <script src="/static/local-console/accounts.js?v=20261022b" defer></script>
 </head>
 <body class="accounts-page">
   <a class="skip-link" href="#account-search">跳到账号搜索</a>
@@ -46,20 +46,29 @@
     <section class="accounts-panel" aria-labelledby="accounts-list-title">
       <div class="accounts-toolbar">
         <div class="accounts-list-title"><h2 id="accounts-list-title">账号列表</h2><span id="accounts-count" class="subtle-label" role="status" aria-live="polite">正在载入…</span></div>
-        <div class="accounts-filters"><div class="search-field"><svg class="ui-icon search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><label class="sr-only" for="account-search">搜索账号标签</label><input id="account-search" type="search" placeholder="搜索账号标签…" autocomplete="off" maxlength="100"></div><div><label class="sr-only" for="account-status-filter">按状态筛选</label><select id="account-status-filter"><option value="all">全部状态</option><option value="fresh">最新快照</option><option value="stale">待刷新</option><option value="unknown">尚未查询</option><option value="error">查询失败</option><option value="expired">凭据过期</option></select></div></div>
+        <div class="accounts-filters"><div class="search-field"><svg class="ui-icon search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><label class="sr-only" for="account-search">搜索账号或邮箱</label><input id="account-search" type="search" placeholder="搜索账号或邮箱…" autocomplete="off" maxlength="100"></div><div><label class="sr-only" for="account-status-filter">按状态筛选</label><select id="account-status-filter"><option value="all">全部状态</option><option value="fresh">最新快照</option><option value="stale">待刷新</option><option value="unknown">尚未查询</option><option value="error">查询失败</option><option value="expired">凭据过期</option></select></div><button id="accounts-columns" class="button button-secondary" type="button" aria-haspopup="dialog">显示列</button></div>
       </div>
       <div class="account-selection-toolbar"><label class="account-select-control"><input id="accounts-select-all" type="checkbox" disabled><span id="accounts-select-label">全选当前筛选</span></label><span id="accounts-selection-count" class="field-hint" role="status">未选择账号</span><button id="concurrency-batch" class="button button-secondary" type="button" disabled>批量设置并发</button><button id="accounts-clear-selection" class="button button-quiet" type="button" disabled>取消选择</button></div>
+      <p id="accounts-columns-notice" class="columns-storage-notice" role="status" hidden></p>
       <div id="account-filter-feedback" class="account-filter-feedback" hidden><p id="active-account-filters"></p><button id="reset-account-filters" class="button button-quiet" type="button">清除筛选 <span aria-hidden="true">×</span></button></div>
       <div id="accounts-loading" class="accounts-empty" role="status"><span class="loading-indicator" aria-hidden="true"></span><h3>正在载入账号</h3><p>读取本地保存的额度快照与调用记录。</p></div>
       <div id="accounts-empty" class="accounts-empty" hidden><h3 id="empty-title">还没有导入账号</h3><p id="empty-description">导入账号凭据后，即可查询额度与查看本地使用情况。</p><a id="empty-import" class="button button-secondary" href="/tokens">导入凭据 →</a><button id="clear-filters" class="button button-secondary" type="button" hidden>清除筛选</button></div>
-      <div id="accounts-table-wrap" class="accounts-table-wrap" hidden>
-        <table class="accounts-table" aria-describedby="accounts-data-note"><thead><tr><th scope="col">账号</th><th scope="col">快照状态</th><th scope="col">大模型剩余<span>reason</span></th><th scope="col">生图剩余<span>image_gen</span></th><th scope="col">本地调用<span>近 24 小时</span></th><th scope="col">上游更新</th><th scope="col"><span class="sr-only">操作</span></th></tr></thead><tbody id="accounts-rows"></tbody></table>
+      <div id="accounts-table-wrap" class="accounts-table-wrap" role="region" aria-label="账号列表，可横向滚动查看全部列" tabindex="0" hidden>
+        <table id="accounts-table" class="accounts-table" aria-describedby="accounts-data-note"><colgroup id="accounts-colgroup"></colgroup><thead><tr id="accounts-table-head"></tr></thead><tbody id="accounts-rows"></tbody></table>
       </div>
-      <div class="accounts-table-footer"><p id="accounts-data-note">数字来自上游返回的快照；总量未返回时不计算使用百分比。</p><div><span id="automatic-refresh"></span><span id="snapshot-updated">尚未载入</span></div></div>
+      <div class="accounts-table-footer"><p id="accounts-data-note">左右滚动查看全部列。额度来自上游快照；「旧值」需刷新后确认。</p><div><span id="automatic-refresh"></span><span id="snapshot-updated">尚未载入</span></div></div>
     </section>
     <div class="accounts-footnotes"><p>本地统计从 <span id="usage-started">开始记录时间</span> 起，仅统计经过本机 Chat2API 的调用。5 小时 / 7 天是本地统计范围，不是上游配额周期。</p><p>已生成图片数是已完成图片资产的去重计数，不等于消耗额度。<span id="display-timezone"></span></p></div>
     <noscript><p class="notice notice-error">请启用 JavaScript 以查看账号额度。</p></noscript>
   </main>
+  <dialog id="account-columns-dialog" class="account-columns-dialog" aria-labelledby="account-columns-title" aria-describedby="account-columns-description">
+    <form id="account-columns-form">
+      <div class="account-columns-body"><h2 id="account-columns-title">显示哪些列</h2><p id="account-columns-description" class="field-hint">账号与操作固定显示。设置仅保存在当前浏览器，不保存账号数据。</p>
+        <div class="account-columns-tools"><span id="account-columns-count" class="field-hint" role="status"></span><button id="account-columns-all" class="button button-quiet" type="button">全选</button><button id="account-columns-default" class="button button-quiet" type="button">恢复默认</button></div>
+        <div id="account-columns-options" class="account-columns-options"></div><p id="account-columns-error" class="notice notice-error" role="alert" hidden></p>
+      </div><div class="concurrency-dialog-actions"><button id="account-columns-cancel" class="button button-secondary" type="button">取消</button><button id="account-columns-apply" class="button button-primary" type="submit">应用</button></div>
+    </form>
+  </dialog>
   <dialog id="concurrency-dialog" class="concurrency-dialog" aria-labelledby="concurrency-title" aria-describedby="concurrency-description">
     <form id="concurrency-form">
       <div class="concurrency-dialog-body"><h2 id="concurrency-title">并发设置</h2><p id="concurrency-description" class="field-hint"></p><p id="concurrency-loading" class="field-hint" role="status" hidden>正在读取最新配置…</p><p id="concurrency-error" class="notice notice-error" role="alert" hidden></p><button id="concurrency-reload" class="button button-secondary" type="button" hidden>载入最新配置</button>
