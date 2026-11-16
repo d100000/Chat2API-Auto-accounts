@@ -82,7 +82,8 @@ class APIKeyStore:
                 file_stat = os.fstat(descriptor)
                 if not stat.S_ISREG(file_stat.st_mode) or (hasattr(os, "getuid") and file_stat.st_uid != os.getuid()):
                     raise KeyStoreError("API 密钥数据库所有权无效。")
-                os.fchmod(descriptor, 0o600)
+                if hasattr(os, "fchmod"):  # Not available on Windows
+                    os.fchmod(descriptor, 0o600)
             finally:
                 os.close(descriptor)
             with closing(self._connect(write=True)) as connection, connection:

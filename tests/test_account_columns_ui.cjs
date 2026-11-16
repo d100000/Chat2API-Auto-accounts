@@ -8,7 +8,7 @@ const syntheticEmail = 'long.synthetic.account.for.layout@example.invalid';
 let document;
 class Element {
   constructor(tag = 'div') {
-    this.tagName = tag; this.children = []; this.dataset = {}; this.attrs = {}; this.listeners = {};
+    this.tagName = tag; this.children = []; this.dataset = {}; this.style = {}; this.attrs = {}; this.listeners = {};
     this.className = ''; this.hidden = false; this.disabled = false; this.value = ''; this._text = ''; this.open = false; this.isConnected = true;
     this.classList = {toggle: (name, on) => { const values = new Set(this.className.split(' ').filter(Boolean)); on ? values.add(name) : values.delete(name); this.className = [...values].join(' '); }};
   }
@@ -58,8 +58,8 @@ function boot(saved = null, storageError = false) {
 }
 (async () => {
   const env = boot(); await flush();
-  assert.equal(env.headers().length, 11); assert.equal(env.headers()[0], 'identity'); assert.equal(env.headers().at(-1), 'actions');
-  assert(!env.headers().includes('luna')); assert.equal(env.rows()[0].children.length, 11);
+  assert.equal(env.headers().length, 12); assert.equal(env.headers()[0], 'identity'); assert.equal(env.headers().at(-1), 'actions');
+  assert(!env.headers().includes('luna')); assert.equal(env.rows()[0].children.length, 12);
   assert(env.rows()[0].textContent.includes('凭据声明')); assert(env.rows()[0].textContent.includes('Plus'));
   assert(env.rows()[1].textContent.includes('等级未提供')); assert(!env.rows()[1].textContent.includes('Free'));
   const email = env.rows()[0].children.find((cell) => cell.dataset.column === 'email');
@@ -74,26 +74,26 @@ function boot(saved = null, storageError = false) {
   assert.equal(env.options().filter((input) => input.disabled).length, 2);
   env.select('email', false); await env.click('account-columns-cancel'); assert(env.headers().includes('email')); assert.equal(env.writes.length, 0);
   await env.click('accounts-columns'); await env.click('account-columns-all');
-  assert.equal(env.headers().length, 11); await env.apply(); assert.equal(env.headers().length, 15);
+  assert.equal(env.headers().length, 12); await env.apply(); assert.equal(env.headers().length, 16);
   assert.equal(env.get('account-columns-dialog').open, false);
   assert.deepEqual(JSON.parse(env.stored()), env.headers().filter((id) => !['identity', 'actions'].includes(id)));
   assert(!env.stored().includes(syntheticEmail)); assert(!env.stored().includes(A));
 
   const checkbox = env.rows()[0].querySelectorAll('[data-select-account]')[0]; checkbox.checked = true; checkbox.listeners.change();
   await env.click(env.rows()[0].querySelectorAll('[data-focus-key]').find((item) => item.dataset.focusKey === `details:${A}`));
-  assert.equal(env.get('accounts-rows').querySelectorAll('.account-detail-row')[0].children[0].colSpan, 15);
+  assert.equal(env.get('accounts-rows').querySelectorAll('.account-detail-row')[0].children[0].colSpan, 16);
   await env.click('accounts-columns'); await env.click('account-columns-default');
-  assert.equal(env.headers().length, 15);
+  assert.equal(env.headers().length, 16);
   env.intervals.find((item) => item.ms === 5000).fn(); await flush();
   assert.equal(env.options().find((item) => item.dataset.columnOption === 'luna').checked, false);
-  await env.apply(); assert.equal(env.headers().length, 11);
+  await env.apply(); assert.equal(env.headers().length, 12);
   assert.equal(env.rows()[0].querySelectorAll('[data-select-account]')[0].checked, true);
-  assert.equal(env.get('accounts-rows').querySelectorAll('.account-detail-row')[0].children[0].colSpan, 11);
+  assert.equal(env.get('accounts-rows').querySelectorAll('.account-detail-row')[0].children[0].colSpan, 12);
   assert(env.get('accounts-rows').textContent.includes('Token 声明到期'));
 
   await env.click('accounts-columns'); for (const item of env.options().filter((input) => !input.disabled)) env.select(item.dataset.columnOption, false);
   assert.equal(env.get('account-columns-apply').disabled, true); assert.equal(env.get('account-columns-error').hidden, false);
-  const writesBefore = env.writes.length; await env.apply(); assert.equal(env.writes.length, writesBefore); assert.equal(env.headers().length, 11);
+  const writesBefore = env.writes.length; await env.apply(); assert.equal(env.writes.length, writesBefore); assert.equal(env.headers().length, 12);
   env.select('email', true); env.failStorage(); await env.apply();
   assert.deepEqual(env.headers(), ['identity', 'email', 'actions']); assert.equal(env.get('accounts-columns-notice').hidden, false);
   assert(env.get('accounts-columns-notice').textContent.includes('无法保存')); assert.equal(env.get('account-columns-dialog').open, false);
@@ -107,7 +107,7 @@ function boot(saved = null, storageError = false) {
   assert.deepEqual(restored.headers(), ['identity', 'email', 'actions']); assert.equal(restored.writes.length, 0);
   await restored.click('accounts-columns'); const cancelEvent = {preventDefault() { this.prevented = true; }};
   restored.get('account-columns-dialog').listeners.cancel(cancelEvent); assert(cancelEvent.prevented); assert.equal(restored.get('account-columns-dialog').open, false);
-  for (const saved of ['[]', '{}', 'invalid JSON']) { const reset = boot(saved); await flush(); assert.equal(reset.headers().length, 11); }
-  const blocked = boot(null, true); await flush(); assert.equal(blocked.headers().length, 11); assert.equal(blocked.get('accounts-columns-notice').hidden, false);
+  for (const saved of ['[]', '{}', 'invalid JSON']) { const reset = boot(saved); await flush(); assert.equal(reset.headers().length, 12); }
+  const blocked = boot(null, true); await flush(); assert.equal(blocked.headers().length, 12); assert.equal(blocked.get('accounts-columns-notice').hidden, false);
   console.log('PASS account columns: profile semantics, fixed/default/all/custom columns, apply/cancel, empty guard, filtered storage, failure fallback, dynamic colspan, preserved selection/details, polling-safe draft, private search.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

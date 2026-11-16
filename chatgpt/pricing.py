@@ -161,7 +161,8 @@ def update_pricing_config(payload, *, path=None):
                 raise PricingError("价格配置不能是符号链接。")
             fd, temporary = tempfile.mkstemp(prefix=".pricing-", dir=target.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                os.fchmod(handle.fileno(), 0o600)
+                if hasattr(os, "fchmod"):  # Not available on Windows
+                    os.fchmod(handle.fileno(), 0o600)
                 handle.write(encoded)
                 handle.flush()
                 os.fsync(handle.fileno())

@@ -69,12 +69,13 @@
     {id: 'image_reset', label: '生图重置', width: 160},
     {id: 'concurrency', label: '并发 · 使用 / 上限', width: 180},
     {id: 'luna', label: 'Luna 核查', width: 224},
+    {id: 'models', label: '可用模型', width: 240},
     {id: 'requests_24h', label: '24h 请求', width: 136},
     {id: 'images_24h', label: '24h 图片', width: 124},
     {id: 'updated_at', label: '上游更新', width: 160},
-    {id: 'actions', label: '操作', width: 148, fixed: true},
+    {id: 'actions', label: '操作', width: 188, fixed: true},
   ];
-  const defaultColumns = ['email', 'plan', 'authorization', 'reason_remaining', 'reason_reset', 'image_remaining', 'image_reset', 'concurrency', 'requests_24h'];
+  const defaultColumns = ['email', 'plan', 'authorization', 'reason_remaining', 'reason_reset', 'image_remaining', 'image_reset', 'concurrency', 'models', 'requests_24h'];
   const columnStorageKey = 'chat2api.accounts.columns.v1';
   const configurableColumns = columnDefinitions.filter((column) => !column.fixed).map((column) => column.id);
   const columnsDialog = byId('account-columns-dialog');
@@ -156,14 +157,29 @@
   }
   function compactQuota(account, featureName) {
     const feature = account.features?.[featureName], box = el('div', 'account-cell-lines');
-    const value = el('div', 'account-quota-line'), amount = el('strong', '', finite(feature?.remaining) ? count(feature.remaining) : '未知');
-    const old = el('span', 'quota-old-tag', '旧值'), status = el('span', 'account-cell-secondary');
-    value.append(amount, old); box.append(value, status);
+    const value = el('div', 'account-quota-line');
+    const remaining = feature?.remaining;
+    const isFiniteNum = finite(remaining);
+    const amount = el('strong', '', isFiniteNum ? count(remaining) : '未知');
+    const old = el('span', 'quota-old-tag', '旧值');
+    const miniTrack = el('div', 'quota-mini-track');
+    const miniFill = el('div', 'quota-mini-fill');
+    miniTrack.append(miniFill);
+    const status = el('span', 'account-cell-secondary');
+    value.append(amount, old); box.append(value, miniTrack, status);
     timed(() => {
-      const stale = staleValue(account, feature); old.hidden = !stale || !finite(feature?.remaining);
+      const stale = staleValue(account, feature); old.hidden = !stale || !isFiniteNum;
       value.classList.toggle('is-stale', stale);
+      const isBlocked = feature?.blocked || (isFiniteNum && remaining === 0);
+      const isLow = isFiniteNum && remaining > 0 && remaining <= 3;
+      miniFill.className = 'quota-mini-fill ' + (isBlocked ? 'is-error' : isLow ? 'is-warning' : 'is-success');
+      const total = feature?.total;
+      let pct = 100;
+      if (isBlocked) pct = 0;
+      else if (finite(total) && total > 0) pct = Math.min(100, Math.max(5, (remaining / total) * 100));
+      miniFill.style.width = pct + '%';
       const scheduling = schedulerFeature(account, featureName);
-      status.textContent = feature?.blocked ? '上游受限' : !finite(feature?.remaining) ? '上游未返回' : scheduling ? schedulerStateLabels[schedulerState(scheduling)] : '上游快照';
+      status.textContent = feature?.blocked ? '上游受限' : !isFiniteNum ? '上游未返回' : scheduling ? schedulerStateLabels[schedulerState(scheduling)] : '上游快照';
       status.title = `${status.textContent}；${stale ? '当前为旧快照，请刷新确认。' : ''}${finite(feature?.total) ? `总量 ${count(feature.total)}；` : ''}${finite(feature?.used) ? `已用 ${count(feature.used)}；` : ''}`;
     });
     return box;
@@ -235,6 +251,129 @@
     if (['stale', 'expired', 'error'].includes(catalog.status)) box.append(el('p', 'field-hint', '目录为旧快照或最近读取失败，请刷新后查看。'));
     return box;
   }
+  const modelIdPattern = /^[A-Za-z0-9._-]{1,100}$/;
+  const probeStatusLabels = {queued: '排队中', discovering: '读取目录', running: '探测中', completed: '探测完成', stopped: '已中止', cancelled: '已取消'};
+  const probeStopLabels = {
+    rate_limit: '上游限流，已停止以免继续消耗额度', authentication_error: '上游认证失败', credentials_unavailable: '账号凭据不可用',
+    account_removed: '账号已被移除', no_available_account: '大模型额度不足或已用尽', account_concurrency_exhausted: '账号并发已满，请稍后重试',
+    concurrency_configuration_unavailable: '并发配置暂不可用', probe_failed: '探测异常中止', cancelled: '已手动取消', interrupted: '服务重启导致探测中断，可继续探测',
+  };
+  function modelIds(values) { return Array.isArray(values) ? values.filter((id) => typeof id === 'string' && modelIdPattern.test(id)) : []; }
+  function probeState(account) { const probe = accountCatalog(account).probe; return probe && typeof probe === 'object' ? probe : null; }
+  function probeActive(account) { return ['queued', 'discovering', 'running'].includes(probeState(account)?.status); }
+  function probeSummary(account) {
+    const probe = probeState(account);
+    if (!probe) return '';
+    const label = probeStatusLabels[probe.status] || '探测状态未知';
+    if (probe.status === 'running') return `${label} ${count(probe.done)} / ${count(probe.total)}${modelIdPattern.test(probe.current || '') ? ` · ${probe.current}` : ''}`;
+    if (['stopped', 'cancelled'].includes(probe.status)) return `${label}：${probeStopLabels[probe.stop_reason] || '原因未提供'}`;
+    return label;
+  }
+  function modelsCell(account) {
+    const catalog = accountCatalog(account), available = modelIds(catalog.available_models), unavailable = modelIds(catalog.unavailable_models);
+    const primary = available.length ? available.join(' · ') : probeActive(account) ? '正在探测…' : '尚无已验证模型';
+    const content = cellLines(primary, probeSummary(account) || (unavailable.length ? `不可用 ${unavailable.length} 个` : '点击「探测」检测可用模型'));
+    content.dataset.tone = available.length ? 'success' : 'muted';
+    content.title = `可用：${available.join(', ') || '无'}；不可用：${unavailable.join(', ') || '无'}。可用 = 实际调用成功且上游报告的模型与请求一致。`;
+    return content;
+  }
+  const chipKinds = {verified: {mark: '✓', label: '可用'}, probing: {mark: '…', label: '正在探测'}, untested: {mark: '·', label: '未探测'},
+    error: {mark: '!', label: '探测失败'}, unusable: {mark: '✗', label: '不可用'}};
+  const chipOrder = {verified: 0, probing: 1, untested: 2, error: 3, unusable: 4};
+  const checkErrorLabels = {check_timeout: '请求超时', check_failed: '请求失败', no_available_account: '额度不足', account_concurrency_exhausted: '并发已满',
+    credentials_unavailable: '凭据不可用', model_not_available: '模型不可用', timeout: '请求超时'};
+  function checkErrorText(check) {
+    const code = check?.error_code;
+    if (typeof code === 'string' && /^http_\d{3}$/.test(code)) return `HTTP ${code.slice(5)}`;
+    return checkErrorLabels[code] || (check?.http_status ? `HTTP ${check.http_status}` : '原因未记录');
+  }
+  function modelEntries(account) {
+    const catalog = accountCatalog(account), checks = catalog.checks && typeof catalog.checks === 'object' ? catalog.checks : {};
+    const listed = new Set(modelIds(catalog.models)), current = probeActive(account) ? probeState(account)?.current : null;
+    const ids = [...new Set([...modelIds(catalog.available_models), ...listed, ...modelIds(Object.keys(checks))])];
+    return ids.map((id) => {
+      const check = checks[id] && typeof checks[id] === 'object' ? checks[id] : null;
+      let kind = 'untested';
+      if (id === current) kind = 'probing';
+      else if (check && !check.stale) kind = check.status === 'verified' ? 'verified' : ['denied', 'model_mismatch'].includes(check.status) ? 'unusable' : check.status === 'error' ? 'error' : 'untested';
+      return {id, kind, check, listed: listed.has(id)};
+    }).sort((left, right) => chipOrder[left.kind] - chipOrder[right.kind]);
+  }
+  function chipTitle(entry) {
+    const {check} = entry, when = check?.checked_at ? ` · ${dateText(check.checked_at)}` : '';
+    if (entry.kind === 'verified') return `${entry.id}：可用，上游报告的模型一致${when}`;
+    if (entry.kind === 'probing') return `${entry.id}：正在探测`;
+    if (entry.kind === 'unusable') return check.status === 'model_mismatch' ? `${entry.id}：不可用，上游实际返回 ${modelIdPattern.test(check.reported_model || '') ? check.reported_model : '其他模型'}${when}` : `${entry.id}：不可用，上游拒绝（${checkErrorText(check)}）${when}`;
+    if (entry.kind === 'error') return `${entry.id}：探测失败（${checkErrorText(check)}），再次探测会重试${when}`;
+    return `${entry.id}：未探测${check?.stale ? '（历史结果已超过 24 小时）' : ''}${entry.listed ? ' · 账号目录已列出' : ''}`;
+  }
+  function modelSection(account, full = false) {
+    const entries = modelEntries(account), box = el('div', 'model-chip-section'), active = probeActive(account);
+    const tally = Object.fromEntries(Object.keys(chipKinds).map((kind) => [kind, entries.filter((entry) => entry.kind === kind).length]));
+    const head = el('div', 'model-chip-head'), title = el('div', 'model-chip-title');
+    title.append(el('strong', '', `模型（${entries.length}）`), el('span', 'model-chip-counts', [`可用 ${tally.verified}`, `不可用 ${tally.unusable}`, tally.error ? `失败 ${tally.error}` : '', `未探测 ${tally.untested + tally.probing}`].filter(Boolean).join(' · ')));
+    const actions = el('div', 'model-chip-actions');
+    const start = el('button', 'button button-quiet', active ? '探测中…' : tally.verified + tally.unusable + tally.error ? '继续探测' : '探测');
+    start.type = 'button'; start.disabled = active || state.expired; start.dataset.focusKey = `probe-${full ? 'detail' : 'card'}:${account.id}`;
+    start.title = '逐个验证未探测或失败的模型，每个模型消耗 1 次大模型额度';
+    start.addEventListener('click', () => { void startProbe([account.id]); }); actions.append(start);
+    if (full && !active) {
+      const force = el('button', 'button button-quiet', '全部重新探测'); force.type = 'button'; force.disabled = state.expired;
+      force.addEventListener('click', () => { void startProbe([account.id], true); }); actions.append(force);
+    }
+    if (active) {
+      const cancel = el('button', 'button button-quiet', '取消'); cancel.type = 'button'; cancel.disabled = state.expired;
+      cancel.addEventListener('click', () => { void cancelProbe([account.id]); }); actions.append(cancel);
+    }
+    head.append(title, actions); box.append(head);
+    if (!entries.length) {
+      box.append(el('p', 'model-chip-status', '尚未读取账号模型目录。点击「探测」会先读取目录，再逐个验证。'));
+      return box;
+    }
+    const key = `models:${account.id}`, expanded = full || state.disclosures.has(key), limit = 12;
+    const list = el('ul', 'model-chip-list');
+    (expanded ? entries : entries.slice(0, limit)).forEach((entry) => {
+      const chip = el('li', 'model-chip'); chip.dataset.kind = entry.kind; chip.title = chipTitle(entry);
+      chip.setAttribute('aria-label', `${entry.id}：${chipKinds[entry.kind].label}`);
+      const mark = el('span', 'model-chip-mark', chipKinds[entry.kind].mark); mark.setAttribute('aria-hidden', 'true');
+      chip.append(mark, el('span', 'model-chip-name', entry.id)); list.append(chip);
+    });
+    box.append(list);
+    if (!full && entries.length > limit) {
+      const toggle = el('button', 'button button-quiet model-chip-more', expanded ? '收起' : `展开全部 ${entries.length} 个`); toggle.type = 'button';
+      toggle.addEventListener('click', () => {
+        state = {...state, disclosures: expanded ? new Set([...state.disclosures].filter((item) => item !== key)) : new Set([...state.disclosures, key])};
+        renderRows();
+      });
+      box.append(toggle);
+    }
+    const probe = probeState(account);
+    const status = probe ? probeSummary(account) + (probe.finished_at && !active ? ` · ${dateText(probe.finished_at)}` : '') : '尚未探测：灰色模型仅来自目录，未经实际调用验证。';
+    const line = el('p', 'model-chip-status', status); line.dataset.state = probe?.status || 'none'; box.append(line);
+    return box;
+  }
+  function modelProbeDetails(account) {
+    const box = section('模型探测');
+    box.append(modelSection(account, true), el('p', 'field-hint', '✓ 可用：实际调用成功且上游报告的模型与请求一致；✗ 不可用：上游拒绝（403/404）或返回了其他模型；! 失败：超时等临时错误，再次探测会重试；· 未探测。候选模型来自本账号目录、其他账号目录及默认模型，每个模型消耗 1 次大模型额度，已有 24 小时内结论的模型默认跳过。遇到限流、认证失败或额度不足会自动停止。'));
+    return box;
+  }
+  async function startProbe(ids, force = false) {
+    if (state.expired || !ids.length) return;
+    error();
+    try {
+      const result = await request('/local-console/accounts/models/probe', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({account_ids: ids, force})}, 30000);
+      const skipped = Object.keys(result?.skipped || {}).length, started = Array.isArray(result?.started) ? result.started.length : 0;
+      feedback(started ? `已开始探测 ${started} 个账号的可用模型${skipped ? `，${skipped} 个账号正忙或不可用已跳过` : ''}。页面会自动更新进度。` : '所选账号正忙或凭据不可用，未开始探测。');
+      await loadAccounts(true);
+    } catch (cause) { if (!(cause instanceof SessionExpired)) error(cause.message); }
+  }
+  async function cancelProbe(ids) {
+    if (state.expired) return;
+    try {
+      await request('/local-console/accounts/models/probe/cancel', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({account_ids: ids})}, 30000);
+      feedback('已取消模型探测，已完成的结果会保留。'); await loadAccounts(true);
+    } catch (cause) { if (!(cause instanceof SessionExpired)) error(cause.message); }
+  }
   function syncSelection() {
     const visible = filteredAccounts(), selectedVisible = visible.filter((account) => selection.has(account.id)).length;
     const all = byId('accounts-select-all'); all.checked = Boolean(visible.length) && selectedVisible === visible.length;
@@ -248,6 +387,8 @@
     byId('concurrency-defaults').disabled = state.expired || concurrency.saving;
     byId('models-refresh-all').disabled = !accounts().length || modelBusy || state.expired;
     byId('models-refresh-all').textContent = modelBusy ? '正在刷新目录…' : '刷新模型目录';
+    const probeSelected = byId('models-probe-selected');
+    if (probeSelected) probeSelected.disabled = !selection.size || state.expired;
     ui['accounts-rows'].querySelectorAll('[data-concurrency-account]').forEach((button) => { button.disabled = state.expired || concurrency.saving; });
     ui['accounts-rows'].querySelectorAll('[data-select-account]').forEach((input) => { input.disabled = state.expired || concurrency.saving; });
   }
@@ -524,6 +665,12 @@
   function renderSummary() {
     const list = accounts();
     byId('summary-accounts').textContent = state.snapshot ? count(list.length) : '—';
+    const totalReason = list.reduce((sum, acc) => sum + (finite(acc.features?.reason?.remaining) ? acc.features.reason.remaining : 0), 0);
+    const totalImage = list.reduce((sum, acc) => sum + (finite(acc.features?.image_gen?.remaining) ? acc.features.image_gen.remaining : 0), 0);
+    const reasonPoolEl = byId('summary-reason-pool');
+    if (reasonPoolEl) reasonPoolEl.textContent = state.snapshot ? `${count(totalReason)} 次` : '—';
+    const imagePoolEl = byId('summary-image-pool');
+    if (imagePoolEl) imagePoolEl.textContent = state.snapshot ? `${count(totalImage)} 次` : '—';
     byId('summary-fresh').textContent = state.snapshot ? count(list.filter((account) => accountStatus(account) === 'fresh').length) : '—';
     byId('summary-attention').textContent = state.snapshot ? count(list.filter((account) => accountStatus(account) !== 'fresh').length) : '—';
     const localCounts = list.map((account) => account.local_usage?.windows?.last_24h?.attempts);
@@ -754,7 +901,7 @@
 
   function detailModels(account) {
     const models = account.local_usage?.models;
-    if (!Array.isArray(models) || !models.length) return [modelCatalogDetails(account), el('p', 'detail-empty', '还没有模型调用记录。通过此服务调用后，记录会显示在这里。')];
+    if (!Array.isArray(models) || !models.length) return [modelProbeDetails(account), modelCatalogDetails(account), el('p', 'detail-empty', '还没有模型调用记录。通过此服务调用后，记录会显示在这里。')];
     const wrapper = el('div', 'detail-model-table-wrap');
     const table = el('table', 'detail-table detail-model-table');
     table.setAttribute('aria-label', '该账号的本地模型调用记录');
@@ -772,7 +919,7 @@
       body.append(row);
     });
     table.append(head, body); wrapper.append(table);
-    return [modelCatalogDetails(account), wrapper, el('p', 'detail-context-note', '记录仅覆盖本地调用；上游声明的模型名称不能证明实际底层模型身份。')];
+    return [modelProbeDetails(account), modelCatalogDetails(account), wrapper, el('p', 'detail-context-note', '记录仅覆盖本地调用；上游声明的模型名称不能证明实际底层模型身份。')];
   }
 
   function accountDetails(account, index) {
@@ -821,6 +968,244 @@
     });
     box.append(tablist, panels);
     return box;
+  }
+
+  let viewMode = 'board';
+  try {
+    viewMode = window.localStorage.getItem('chat2api.accounts.view_mode') || 'board';
+  } catch (_) {}
+
+  function updateViewVisibility() {
+    const isBoard = viewMode === 'board';
+    const hasData = filteredAccounts().length > 0;
+    byId('view-mode-board')?.classList.toggle('is-active', isBoard);
+    byId('view-mode-table')?.classList.toggle('is-active', !isBoard);
+    const boardWrap = byId('accounts-board-wrap');
+    const tableWrap = byId('accounts-table-wrap');
+    const colBtn = byId('accounts-columns');
+    if (boardWrap) boardWrap.hidden = !isBoard || !hasData;
+    if (tableWrap) tableWrap.hidden = isBoard || !hasData;
+    if (colBtn) colBtn.hidden = isBoard;
+  }
+
+  function renderBoard(filtered, revealedId = null) {
+    const grid = byId('accounts-cards-grid');
+    if (!grid) return;
+    const fragment = document.createDocumentFragment();
+
+    filtered.forEach((account, index) => {
+      const card = el('div', 'quota-card');
+      card.dataset.accountId = account.id;
+      const isExpanded = state.expanded.has(account.id);
+      const profile = account.profile || {};
+      const usage = account.local_usage?.windows?.last_24h;
+      const reasonFeat = account.features?.reason;
+      const imageFeat = account.features?.image_gen;
+
+      // 1. Header
+      const header = el('div', 'quota-card-header');
+      const identity = el('div', 'quota-card-identity');
+
+      let hash = 0;
+      for (let i = 0; i < account.id.length; i++) hash = ((hash << 5) - hash + account.id.charCodeAt(i)) | 0;
+      const hue = Math.abs(hash) % 360;
+      const avatar = el('div', 'quota-card-avatar');
+      avatar.style.background = `hsl(${hue}, 65%, 45%)`;
+      avatar.textContent = (account.label || 'A').slice(0, 2);
+
+      const titles = el('div', 'quota-card-titles');
+      const topLine = el('div', 'quota-card-top-line');
+      const name = el('span', 'quota-card-name', account.label || `账号 ${index + 1}`);
+      name.title = account.label || account.id;
+
+      const planName = profile.plan || 'free';
+      const planBadge = el('span', `quota-plan-badge quota-plan-${planName.toLowerCase()}`, planLabels[profile.plan] || planName.toUpperCase());
+
+      const status = accountStatus(account);
+      const isImageBlocked = imageFeat?.blocked || (finite(imageFeat?.remaining) && imageFeat.remaining === 0);
+      const isReasonBlocked = reasonFeat?.blocked || (finite(reasonFeat?.remaining) && reasonFeat.remaining === 0);
+      const healthBadge = el('span', 'quota-health-badge');
+      if (status === 'expired' || status === 'error') {
+        healthBadge.className += ' health-error';
+        healthBadge.textContent = statusLabels[status];
+      } else if (isReasonBlocked && isImageBlocked) {
+        healthBadge.className += ' health-error';
+        healthBadge.textContent = '额度已用尽';
+      } else if (isImageBlocked || isReasonBlocked) {
+        healthBadge.className += ' health-warning';
+        healthBadge.textContent = isImageBlocked ? '生图受限' : '大模型受限';
+      } else {
+        healthBadge.className += ' health-fresh';
+        healthBadge.textContent = '正常可用';
+      }
+
+      topLine.append(name, planBadge, healthBadge);
+      const email = el('div', 'quota-card-email', profile.email || '凭据未提供邮箱');
+      email.title = profile.email || '';
+      titles.append(topLine, email);
+      identity.append(avatar, titles);
+
+      const actions = el('div', 'quota-card-actions');
+      const refreshBtn = el('button', 'button button-quiet', '刷新');
+      refreshBtn.type = 'button';
+      refreshBtn.dataset.focusKey = `refresh-card:${account.id}`;
+      refreshBtn.addEventListener('click', () => { void refreshAccounts(account.id); });
+
+      const concBtn = el('button', 'button button-quiet', '并发');
+      concBtn.type = 'button';
+      concBtn.addEventListener('click', () => openConcurrency('account', [account.id]));
+
+      const detailsBtn = el('button', 'button button-secondary', isExpanded ? '收起' : '详情');
+      detailsBtn.type = 'button';
+      detailsBtn.addEventListener('click', () => {
+        const expanded = state.expanded.has(account.id)
+          ? new Set([...state.expanded].filter((id) => id !== account.id))
+          : new Set([...state.expanded, account.id]);
+        state = { ...state, expanded };
+        renderRows(expanded.has(account.id) ? account.id : null);
+      });
+
+      actions.append(refreshBtn, concBtn, detailsBtn);
+      header.append(identity, actions);
+      card.append(header);
+
+      // 2. Metrics
+      const metricsList = el('div', 'quota-metrics-list');
+
+      // (a) Reason Metric
+      const reasonBox = el('div', 'quota-metric-box');
+      const reasonHead = el('div', 'quota-metric-head');
+      const reasonLabel = el('span', 'quota-metric-label', '🧠 大模型额度');
+      const reasonRem = reasonFeat?.remaining;
+      const reasonFinite = finite(reasonRem);
+      const reasonAmount = el('span', 'quota-metric-amount', reasonFinite ? `${count(reasonRem)} 次可用` : '未知');
+      if (reasonFinite && reasonRem === 0) reasonAmount.className += ' is-zero';
+      reasonHead.append(reasonLabel, reasonAmount);
+
+      const reasonTrack = el('div', 'quota-bar-track');
+      const reasonFill = el('div', 'quota-bar-fill');
+      reasonTrack.append(reasonFill);
+
+      const reasonSub = el('div', 'quota-metric-sub');
+      const reasonReset = el('span', 'quota-reset-text');
+      const reasonTag = el('span', 'quota-status-tag');
+      reasonSub.append(reasonReset, reasonTag);
+
+      reasonBox.append(reasonHead, reasonTrack, reasonSub);
+      metricsList.append(reasonBox);
+
+      // (b) Image Metric
+      const imageBox = el('div', 'quota-metric-box');
+      const imageHead = el('div', 'quota-metric-head');
+      const imageLabel = el('span', 'quota-metric-label', '🎨 生图额度');
+      const imageRem = imageFeat?.remaining;
+      const imageFinite = finite(imageRem);
+      const imageTotal = imageFeat?.total;
+      let imageText = '未知';
+      if (imageFinite) {
+        imageText = finite(imageTotal) ? `${count(imageRem)} / ${count(imageTotal)} 次` : `${count(imageRem)} 次可用`;
+      }
+      const imageAmount = el('span', 'quota-metric-amount', imageText);
+      if (imageFinite && imageRem === 0) imageAmount.className += ' is-zero';
+      imageHead.append(imageLabel, imageAmount);
+
+      const imageTrack = el('div', 'quota-bar-track');
+      const imageFill = el('div', 'quota-bar-fill');
+      imageTrack.append(imageFill);
+
+      const imageSub = el('div', 'quota-metric-sub');
+      const imageReset = el('span', 'quota-reset-text');
+      const imageTag = el('span', 'quota-status-tag');
+      imageSub.append(imageReset, imageTag);
+
+      imageBox.append(imageHead, imageTrack, imageSub);
+      metricsList.append(imageBox);
+
+      // (c) Extra capsules
+      const extraEntries = Object.entries(account.features || {}).filter(([k]) => !['reason', 'image_gen'].includes(k));
+      if (extraEntries.length > 0) {
+        const capGrid = el('div', 'quota-capsules-grid');
+        const iconMap = { deep_research: '🔍', file_upload: '📎', paste_text_to_file: '📝' };
+        extraEntries.forEach(([fname, fval]) => {
+          const cap = el('div', 'quota-capsule-item');
+          const icon = el('span', 'quota-capsule-icon', iconMap[fname] || '⚡');
+          const cname = el('span', 'quota-capsule-name', featureNames[fname] || fname);
+          const cnum = el('span', 'quota-capsule-num', finite(fval?.remaining) ? `${count(fval.remaining)} 次` : '可用');
+          cap.append(icon, cname, cnum);
+          capGrid.append(cap);
+        });
+        metricsList.append(capGrid);
+      }
+
+      card.append(metricsList);
+
+      timed(() => {
+        const isRBlocked = reasonFeat?.blocked || (reasonFinite && reasonRem === 0);
+        const isRLow = reasonFinite && reasonRem > 0 && reasonRem <= 3;
+        reasonFill.className = 'quota-bar-fill ' + (isRBlocked ? 'bar-error' : isRLow ? 'bar-warning' : 'bar-success');
+        let rPct = 100;
+        if (isRBlocked) rPct = 0;
+        else if (finite(reasonFeat?.total) && reasonFeat.total > 0) rPct = Math.min(100, Math.max(5, (reasonRem / reasonFeat.total) * 100));
+        reasonFill.style.width = rPct + '%';
+
+        const rSched = schedulerFeature(account, 'reason');
+        reasonTag.textContent = reasonFeat?.blocked ? '上游受限' : !reasonFinite ? '未提供' : rSched ? schedulerStateLabels[schedulerState(rSched)] : '正常';
+        reasonTag.className = 'quota-status-tag ' + (isRBlocked ? 'tag-error' : 'tag-success');
+
+        const rResetStamp = timestamp(reasonFeat?.reset_at);
+        if (rResetStamp !== null) {
+          const rDiff = rResetStamp - Date.now();
+          reasonReset.textContent = rDiff <= 0 ? '重置时间已到' : `⏱ ${shortDateFormat.format(rResetStamp)} (距重置 ${countdown(rDiff)})`;
+        } else {
+          reasonReset.textContent = '重置时间未知';
+        }
+
+        const isIBlocked = imageFeat?.blocked || (imageFinite && imageRem === 0);
+        const isILow = imageFinite && imageRem > 0 && imageRem <= 1;
+        imageFill.className = 'quota-bar-fill ' + (isIBlocked ? 'bar-error' : isILow ? 'bar-warning' : 'bar-success');
+        let iPct = 100;
+        if (isIBlocked) iPct = 0;
+        else if (finite(imageTotal) && imageTotal > 0) iPct = Math.min(100, Math.max(5, (imageRem / imageTotal) * 100));
+        imageFill.style.width = iPct + '%';
+
+        const iSched = schedulerFeature(account, 'image_gen');
+        imageTag.textContent = imageFeat?.blocked ? '上游受限' : !imageFinite ? '未提供' : iSched ? schedulerStateLabels[schedulerState(iSched)] : '正常';
+        imageTag.className = 'quota-status-tag ' + (isIBlocked ? 'tag-error' : 'tag-success');
+
+        const iResetStamp = timestamp(imageFeat?.reset_at);
+        if (iResetStamp !== null) {
+          const iDiff = iResetStamp - Date.now();
+          imageReset.textContent = iDiff <= 0 ? '重置时间已到' : `⏱ ${shortDateFormat.format(iResetStamp)} (距重置 ${countdown(iDiff)})`;
+        } else {
+          imageReset.textContent = '重置时间未知';
+        }
+      });
+
+      card.append(modelSection(account));
+
+      // 3. Footer
+      const footer = el('div', 'quota-card-footer');
+      const credExp = timestamp(profile.expires_at || account.credential_expires_at);
+      const expText = el('span', '', credExp !== null ? `🔑 凭据至 ${shortDateFormat.format(credExp)}` : '🔑 凭据有效');
+      const callsText = el('span', '', `⚡ 24h 本地: 成功 ${count(usage?.succeeded)} · 失败 ${count(usage?.failed)}`);
+      footer.append(expText, callsText);
+      card.append(footer);
+
+      if (isExpanded) {
+        const detailBox = el('div', 'quota-card-details-drawer');
+        detailBox.style.marginTop = 'var(--space-3)';
+        detailBox.style.paddingTop = 'var(--space-3)';
+        detailBox.style.borderTop = '1px solid var(--color-border)';
+        const details = accountDetails(account, index);
+        details.classList.toggle('is-entering', account.id === revealedId);
+        detailBox.append(details);
+        card.append(detailBox);
+      }
+
+      fragment.append(card);
+    });
+
+    grid.replaceChildren(fragment);
   }
 
   function rowsSignature(filtered = filteredAccounts()) {
@@ -885,6 +1270,8 @@
           const value = lunaStatus(account), check = accountCatalog(account).checks?.['gpt-6-luna'];
           const content = cellLines(value.text, timestamp(check?.checked_at) !== null ? shortDateFormat.format(timestamp(check.checked_at)) : '尚无调用核查');
           content.dataset.tone = value.tone; content.title = 'gpt-6-luna；目录列出不等于调用成功，响应标签不证明底层模型身份。'; cell.append(content);
+        } else if (column.id === 'models') {
+          cell.append(modelsCell(account));
         } else if (column.id === 'requests_24h') {
           cell.append(cellLines(count(usage?.attempts), `成功 ${count(usage?.succeeded)} · 失败 ${count(usage?.failed)}`));
         } else if (column.id === 'images_24h') {
@@ -907,7 +1294,11 @@
           });
           const settings = el('button', 'button button-quiet', '并发'); settings.type = 'button'; settings.dataset.concurrencyAccount = account.id; settings.dataset.focusKey = `concurrency:${account.id}`;
           settings.setAttribute('aria-label', `设置 ${account.label || '账号'} 的并发`); settings.addEventListener('click', () => openConcurrency('account', [account.id]));
-          actions.append(refreshButton, settings, detailsButton); cell.append(actions);
+          const probing = probeActive(account), probeButton = el('button', 'button button-quiet', probing ? '探测中' : '探测');
+          probeButton.type = 'button'; probeButton.dataset.probeAccount = account.id; probeButton.dataset.focusKey = `probe:${account.id}`;
+          probeButton.disabled = probing || state.expired; probeButton.title = probing ? probeSummary(account) : '探测该账号实际可用的模型';
+          probeButton.setAttribute('aria-label', `探测 ${account.label || '该账号'} 的可用模型`); probeButton.addEventListener('click', () => { void startProbe([account.id]); });
+          actions.append(refreshButton, settings, probeButton, detailsButton); cell.append(actions);
         }
         return cell;
       });
@@ -922,7 +1313,8 @@
       fragment.append(detailRow);
     });
     ui['accounts-rows'].replaceChildren(fragment);
-    ui['accounts-table-wrap'].hidden = filtered.length === 0;
+    renderBoard(filtered, revealedId);
+    updateViewVisibility();
     ui['accounts-empty'].hidden = !state.snapshot || filtered.length > 0;
     const resultCount = state.snapshot ? `${filtered.length} / ${accounts().length} 个账号` : '尚未载入';
     if (byId('accounts-count').textContent !== resultCount) byId('accounts-count').textContent = resultCount;
@@ -974,6 +1366,8 @@
 
   function schedulePoll() {
     if (pollTimer) window.clearTimeout(pollTimer);
+    // Model probes can run for minutes; follow them without the refresh poll cap.
+    if (!state.expired && accounts().some(probeActive)) { pollTimer = window.setTimeout(() => { void loadAccounts(true); }, 3000); return; }
     if (state.expired || !accounts().some((account) => account.refresh?.status === 'in_progress')) { pollCount = 0; return; }
     if (pollCount >= 60) { feedback('后台刷新仍未完成，可稍后点击「更新本地视图」查看结果。'); return; }
     pollTimer = window.setTimeout(() => { pollCount += 1; void loadAccounts(true); }, 2000);
@@ -1067,6 +1461,7 @@
   concurrencyDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeConcurrency(); });
   for (const feature of features) for (const [suffix, type] of [['mode', 'change'], ['value', 'input']]) byId(`concurrency-${feature}-${suffix}`).addEventListener(type, () => { concurrency = {...concurrency, dirty: true}; concurrencyControls(); });
   byId('models-refresh-all').addEventListener('click', () => { void refreshModels(); });
+  byId('models-probe-selected')?.addEventListener('click', () => { void startProbe([...selection]); });
   window.addEventListener('beforeunload', (event) => { if (concurrencyDialog.open && concurrency.dirty) { event.preventDefault(); event.returnValue = ''; } });
   byId('accounts-columns').addEventListener('click', openColumns);
   byId('account-columns-all').addEventListener('click', () => { columnDraft = new Set(configurableColumns); syncColumnDraft(); });
@@ -1074,6 +1469,17 @@
   byId('account-columns-cancel').addEventListener('click', closeColumns);
   byId('account-columns-form').addEventListener('submit', applyColumns);
   columnsDialog.addEventListener('cancel', (event) => { event.preventDefault(); closeColumns(); });
+  byId('view-mode-board')?.addEventListener('click', () => {
+    viewMode = 'board';
+    try { window.localStorage.setItem('chat2api.accounts.view_mode', 'board'); } catch (_) {}
+    updateViewVisibility();
+  });
+  byId('view-mode-table')?.addEventListener('click', () => {
+    viewMode = 'table';
+    try { window.localStorage.setItem('chat2api.accounts.view_mode', 'table'); } catch (_) {}
+    updateViewVisibility();
+  });
+  updateViewVisibility();
   renderColumnHeader();
   void loadAccounts();
 })();

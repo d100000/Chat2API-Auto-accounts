@@ -369,7 +369,8 @@ class AccountQuotaService:
             self._cache_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             descriptor, temporary = tempfile.mkstemp(prefix=".account-quota-", dir=self._cache_path.parent)
             with os.fdopen(descriptor, "w") as handle:
-                os.fchmod(handle.fileno(), 0o600)
+                if hasattr(os, "fchmod"):  # Not available on Windows
+                    os.fchmod(handle.fileno(), 0o600)
                 json.dump({"version": 1, "accounts": self._records}, handle, ensure_ascii=False)
             os.replace(temporary, self._cache_path)
             self._cache_error = False

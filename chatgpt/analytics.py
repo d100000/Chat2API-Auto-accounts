@@ -166,7 +166,8 @@ class AnalyticsStore:
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         descriptor = os.open(self.path, os.O_CREAT | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0), 0o600)
         try:
-            os.fchmod(descriptor, 0o600)
+            if hasattr(os, "fchmod"):  # Not available on Windows
+                os.fchmod(descriptor, 0o600)
         finally:
             os.close(descriptor)
         now = self._now()

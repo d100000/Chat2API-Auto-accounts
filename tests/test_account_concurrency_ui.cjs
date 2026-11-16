@@ -2,7 +2,7 @@
 const fs = require('fs'), vm = require('vm'), assert = require('assert');
 let document;
 class Element {
-  constructor(tag = 'div') { this.tagName = tag; this.children = []; this.dataset = {}; this.attrs = {}; this.listeners = {}; this.className = ''; this.hidden = false; this.disabled = false; this.value = ''; this._text = ''; this.open = false; this.isConnected = true; this.classList = {toggle: (name, on) => { const values = new Set(this.className.split(' ').filter(Boolean)); on ? values.add(name) : values.delete(name); this.className = [...values].join(' '); }}; }
+  constructor(tag = 'div') { this.tagName = tag; this.children = []; this.dataset = {}; this.style = {}; this.attrs = {}; this.listeners = {}; this.className = ''; this.hidden = false; this.disabled = false; this.value = ''; this._text = ''; this.open = false; this.isConnected = true; this.classList = {toggle: (name, on) => { const values = new Set(this.className.split(' ').filter(Boolean)); on ? values.add(name) : values.delete(name); this.className = [...values].join(' '); }}; }
   append(...nodes) { for (const node of nodes) this.children.push(...(node.tagName === 'fragment' ? node.children : [node])); }
   replaceChildren(...nodes) { this.children = []; this._text = ''; this.append(...nodes); }
   set textContent(value) { this._text = String(value); this.children = []; }

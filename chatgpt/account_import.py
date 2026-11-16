@@ -50,7 +50,8 @@ def _write_private(path, content):
     descriptor, temporary = tempfile.mkstemp(prefix=".account-import-", dir=path.parent)
     try:
         with os.fdopen(descriptor, "wb") as handle:
-            os.fchmod(handle.fileno(), 0o600)
+            if hasattr(os, "fchmod"):  # Not available on Windows
+                os.fchmod(handle.fileno(), 0o600)
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
@@ -62,6 +63,9 @@ def _write_private(path, content):
 
 
 def _sync_dir(path):
+    # Windows does not allow fsync on directories (PermissionError); skip it.
+    if os.name == "nt":
+        return
     descriptor = os.open(path, os.O_RDONLY)
     try:
         os.fsync(descriptor)
@@ -162,7 +166,8 @@ async def import_accounts(text, *, reason_limit="inherit", image_gen_limit="inhe
         prepared = False
         try:
             with os.fdopen(descriptor, "wb") as handle:
-                os.fchmod(handle.fileno(), 0o600)
+                if hasattr(os, "fchmod"):  # Not available on Windows
+                    os.fchmod(handle.fileno(), 0o600)
                 handle.write(content)
                 handle.flush()
                 os.fsync(handle.fileno())

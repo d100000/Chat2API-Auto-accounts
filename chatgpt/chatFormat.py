@@ -5,6 +5,7 @@ import re
 import string
 import time
 import uuid
+from urllib.parse import urlsplit
 
 import pybase64
 import websockets
@@ -14,6 +15,34 @@ from api.files import get_file_content
 from api.models import model_system_fingerprint
 from api.tokens import split_tokens_from_content, calculate_image_tokens, num_tokens_from_messages
 from utils.Logger import logger
+
+
+def _is_estuary_url(url: str) -> bool:
+    """判断是否为需要认证的 ChatGPT estuary 内部链接。"""
+    try:
+        parsed = urlsplit(url)
+        return parsed.hostname == "chatgpt.com" and parsed.path == "/backend-api/estuary/content"
+    except Exception:
+        return False
+
+
+async def _resolve_image_url(service, url: str) -> str:
+    """若为 estuary 链接则通过服务端带认证下载到本地缓存，返回本地可访问的 HTTP 链接。"""
+    if url and _is_estuary_url(url):
+        return await service.cache_and_get_image_url(url)
+    return url
+
+
+async def _replace_estuary_in_text(service, text: str) -> str:
+    """替换文本中出现的 estuary 内部链接为本地缓存链接。"""
+    if not text or "chatgpt.com/backend-api/estuary/content" not in text:
+        return text
+    pattern = r'https://chatgpt\.com/backend-api/estuary/content\?[^\s)"]+'
+    matches = re.findall(pattern, text)
+    for m in set(matches):
+        resolved = await service.cache_and_get_image_url(m)
+        text = text.replace(m, resolved)
+    return text
 
 moderation_message = "I'm sorry, I cannot provide or engage in any content related to pornography, violence, or any unethical material. If you have any other questions or need assistance, please feel free to let me know. I'll do my best to provide support and assistance."
 
@@ -314,6 +343,7 @@ async def stream_response(service, response, model, max_tokens):
                                     new_text = f"\n```{new_text}"
                             else:
                                 image_download_url = await service.get_download_url(file_id) if pointer.startswith("file-service://") else await service.get_attachment_url(file_id, conversation_id)
+                                image_download_url = await _resolve_image_url(service, image_download_url)
                                 new_text += f"\n```\n![image]({image_download_url})\n"
                     else:
                         text = content.get("text", "")
@@ -334,6 +364,7 @@ async def stream_response(service, response, model, max_tokens):
                     elif last_content_type == "multimodal_text" and outer_content_type != "multimodal_text":
                         new_text = "\n```\n" + new_text
 
+                    new_text = await _replace_estuary_in_text(service, new_text)
                     delta = {"content": new_text}
                     last_content_type = outer_content_type
                 elif status == "finished_successfully":
@@ -351,6 +382,7 @@ async def stream_response(service, response, model, max_tokens):
                                     logger.debug(f"file_id: {file_id}")
                                     image_download_url = await service.get_download_url(file_id)
                                     logger.debug(f"image_download_url: {image_download_url}")
+                                    image_download_url = await _resolve_image_url(service, image_download_url)
                                     if image_download_url:
                                         image_contents.append(f"\n![image]({image_download_url})\n")
                                     else:
@@ -358,6 +390,7 @@ async def stream_response(service, response, model, max_tokens):
                                 else:
                                     file_id = part.get('asset_pointer').replace('sediment://', '')
                                     image_download_url = await service.get_attachment_url(file_id, conversation_id)
+                                    image_download_url = await _resolve_image_url(service, image_download_url)
                                     image_contents.append(f"\n![image]({image_download_url})\n")
                         delta = {"content": "".join(image_contents)}
                     elif message.get("end_turn"):
@@ -375,6 +408,7 @@ async def stream_response(service, response, model, max_tokens):
                             else:
                                 delta = {}
                         else:
+                            new_text = await _replace_estuary_in_text(service, new_text)
                             delta = {"content": new_text}
                         finish_reason = "stop"
                         end = True

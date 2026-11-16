@@ -296,7 +296,8 @@ class AccountScheduler:
             self._path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             descriptor, temporary = tempfile.mkstemp(prefix=".account-scheduler-", dir=self._path.parent)
             with os.fdopen(descriptor, "w") as handle:
-                os.fchmod(handle.fileno(), 0o600)
+                if hasattr(os, "fchmod"):  # Not available on Windows
+                    os.fchmod(handle.fileno(), 0o600)
                 json.dump({"version": 1, "accounts": self._states, "events": self._events,
                            "last_selected": self._last_selected,
                            "active": [{"account_id": self.concurrency.resolve(lease.account_id), "feature": lease.feature,

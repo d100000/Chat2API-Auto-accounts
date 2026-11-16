@@ -1,11 +1,13 @@
 import asyncio
+import hashlib
 import hmac
+import os
 import re
 import types
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import Request, HTTPException, Form, Security
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response, FileResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -69,6 +71,7 @@ async def to_send_conversation(request_data, req_token, lease=None):
     if metrics is not None:
         metrics.attach(chat_service)
     chat_service.schedule_lease = lease
+    chat_service.server_base_url = request_data.get("_server_base_url") or "http://127.0.0.1:5005"
     # req_token may be the shared local key; only the service knows which
     # imported account this attempt will actually use.
     try:
@@ -348,7 +351,10 @@ async def send_conversation(request: Request, credentials: HTTPAuthorizationCred
         req_token = await pool_key(supplied_token, record_use=True)
     metrics = await start_request(supplied_token, request_data, "chat")
     request.state.analytics_request_id = metrics.id
-    request_data = {**request_data, "_request_metrics": metrics}
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme
+    server_base_url = f"{scheme}://{host}" if host else str(request.base_url).rstrip("/")
+    request_data = {**request_data, "_request_metrics": metrics, "_server_base_url": server_base_url}
     try:
         chat_service, res = await run_connected(request, run_request(process, request_data, req_token))
     except ClientDisconnected:
@@ -477,3 +483,42 @@ async def clear_seed_tokens():
         f.write("{}")
     logger.info(f"Seed token count: {len(globals.seed_map)}")
     return {"status": "success", "seed_tokens_count": len(globals.seed_map)}
+
+
+@app.get(f"/{api_prefix}/v1/images/cache/{{filename}}" if api_prefix else "/v1/images/cache/{filename}")
+@app.get("/v1/images/cache/{filename}")
+async def get_cached_image(filename: str):
+    filename = os.path.basename(filename)
+    filepath = os.path.join("data", "images", filename)
+    if not os.path.isfile(filepath):
+        raise HTTPException(status_code=404, detail="Image not found.")
+    return FileResponse(filepath, media_type="image/png", headers={"Cache-Control": "public, max-age=604800"})
+
+
+@app.get("/backend-api/estuary/content")
+async def proxy_estuary_content(request: Request):
+    """兜底代理：当直接访问 /backend-api/estuary/content 时，从本地缓存或上游获取。"""
+    query = str(request.query_params)
+    url = f"https://chatgpt.com/backend-api/estuary/content?{query}"
+    cache_id = hashlib.sha256(url.encode()).hexdigest()[:24]
+    filepath = os.path.join("data", "images", f"{cache_id}.png")
+    if os.path.isfile(filepath):
+        return FileResponse(filepath, media_type="image/png", headers={"Cache-Control": "public, max-age=604800"})
+
+    if globals.token_list:
+        try:
+            service = ChatService(globals.token_list[0])
+            await service.set_dynamic_data({})
+            headers = {k: v for k, v in service.base_headers.items()
+                       if k.lower() in {"authorization", "user-agent", "oai-device-id",
+                                        "chatgpt-account-id", "origin", "referer"}}
+            r = await service.s.get(url, headers=headers, timeout=30, allow_redirects=True)
+            if r.status_code == 200 and r.content:
+                os.makedirs(os.path.join("data", "images"), exist_ok=True)
+                with open(filepath, "wb") as f:
+                    f.write(r.content)
+                return Response(content=r.content, media_type="image/png", headers={"Cache-Control": "public, max-age=604800"})
+        except Exception as e:
+            logger.error(f"proxy_estuary_content error: {e}")
+    raise HTTPException(status_code=404, detail="File link not found.")
+

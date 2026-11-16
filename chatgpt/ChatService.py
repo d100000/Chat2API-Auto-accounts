@@ -49,6 +49,7 @@ class ChatService:
         self.conversation_accepted = False
         self.conversation_rejected = False
         self.generated_image_urls = {}
+        self.server_base_url = "http://127.0.0.1:5005"
 
     async def set_dynamic_data(self, data):
         if self.req_token:
@@ -425,6 +426,42 @@ class ChatService:
         except Exception as e:
             logger.error(f"Failed to get download url: {e}")
             return ""
+
+    async def cache_and_get_image_url(self, url):
+        """下载图片（支持需要认证的 estuary 链接），保存到本地缓存并返回本地可访问的 HTTP URL。
+        若下载失败则返回原 url。"""
+        import hashlib
+        import os
+        from urllib.parse import urlsplit
+        import utils.configs as configs
+        try:
+            cache_dir = os.path.join("data", "images")
+            os.makedirs(cache_dir, exist_ok=True)
+            cache_id = hashlib.sha256(url.encode()).hexdigest()[:24]
+            filename = f"{cache_id}.png"
+            filepath = os.path.join(cache_dir, filename)
+
+            if not (os.path.exists(filepath) and os.path.getsize(filepath) > 0):
+                headers = {}
+                if urlsplit(url).hostname == "chatgpt.com":
+                    headers = {k: v for k, v in self.base_headers.items()
+                               if k.lower() in {"authorization", "user-agent", "oai-device-id",
+                                                "chatgpt-account-id", "origin", "referer"}}
+                r = await self.s.get(url, headers=headers, timeout=30, allow_redirects=True)
+                if r.status_code == 200 and r.content:
+                    with open(filepath, "wb") as f:
+                        f.write(r.content)
+                    logger.info(f"Cached generated image: {filename} ({len(r.content)} bytes)")
+                else:
+                    logger.warning(f"Failed to download image from estuary: HTTP {r.status_code} for {url}")
+                    return url
+
+            base_url = getattr(self, "server_base_url", None) or "http://127.0.0.1:5005"
+            prefix = f"/{configs.api_prefix}" if configs.api_prefix else ""
+            return f"{base_url}{prefix}/v1/images/cache/{filename}"
+        except Exception as e:
+            logger.error(f"cache_and_get_image_url failed: {e}")
+            return url
 
     def record_generated_image(self, file_id, url):
         evidence = getattr(self.usage_trace, "evidence", None)

@@ -373,7 +373,12 @@ async def test_chat(body: ChatBody, request: Request):
     url = f"http://127.0.0.1:5005{prefix}/v1/chat/completions"
     handed_to_stream = False
     try:
-        response = await client.post(url, headers={"Authorization": f"Bearer {configs.authorization_list[0]}"},
+        req_headers = {
+            "Authorization": f"Bearer {configs.authorization_list[0]}",
+            "X-Forwarded-Host": request.headers.get("host") or "127.0.0.1:5005",
+            "X-Forwarded-Proto": request.url.scheme or "http",
+        }
+        response = await client.post(url, headers=req_headers,
                                      json=body.model_dump(exclude_none=True), stream=True, allow_redirects=False)
         content_type = response.headers.get("content-type", "")
         if response.status_code != 200:

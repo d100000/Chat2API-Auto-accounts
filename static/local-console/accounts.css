@@ -28,7 +28,10 @@
 .accounts-feedback { margin-bottom: var(--space-3); color: var(--color-muted); font-size: var(--type-sm); }
 .accounts-feedback:empty { display: none; }
 .notice-warning { color: var(--color-warning); background: var(--color-warning-bg); border-color: var(--color-warning-bg); }
-.account-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--space-3); padding: 0; margin: 0 0 var(--space-5); }
+.account-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--space-3); padding: 0; margin: 0 0 var(--space-5); }
+@media (max-width: 1100px) {
+  .account-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 .summary-stat { padding: var(--space-4) var(--space-5); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); min-width: 0; }
 .summary-stat dt { color: var(--color-muted); font-size: var(--type-xs); }
 .summary-stat dd { margin: var(--space-2) 0 0; }
@@ -299,3 +302,365 @@
   .account-columns-options { gap: var(--space-1) var(--space-3); }
   .account-column-option { min-height: 44px; font-size: var(--type-xs); }
 }
+
+/* ========================================================
+   Sub2API 风格额度看板 (Quota Board & Card View)
+   ======================================================== */
+.view-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 2px;
+  background: var(--color-subtle);
+  gap: 2px;
+}
+.view-mode-toggle .button {
+  border: none;
+  background: transparent;
+  padding: 4px 10px;
+  font-size: var(--type-xs);
+  font-weight: 500;
+  color: var(--color-muted);
+  border-radius: calc(var(--radius-sm) - 2px);
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.view-mode-toggle .button:hover { color: var(--color-text); }
+.view-mode-toggle .button.is-active {
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  font-weight: 600;
+}
+.view-mode-toggle .ui-icon { width: 14px; height: 14px; }
+
+/* 看板网格布局 */
+.accounts-board-wrap {
+  padding: var(--space-4) var(--accounts-cell-inset);
+}
+.accounts-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(460px, 1fr));
+  gap: var(--space-4);
+}
+@media (max-width: 600px) {
+  .accounts-cards-grid { grid-template-columns: 1fr; }
+  .accounts-board-wrap { padding: var(--space-3); }
+}
+
+/* 额度卡片 */
+.quota-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  position: relative;
+}
+.quota-card:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.07);
+}
+
+/* 卡片头部 */
+.quota-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.quota-card-identity {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.quota-card-avatar {
+  width: 42px;
+  height: 42px;
+  border-radius: var(--radius-md);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: var(--type-base);
+  flex: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
+}
+.quota-card-titles { min-width: 0; }
+.quota-card-top-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin-bottom: 2px;
+}
+.quota-card-name {
+  font-weight: 600;
+  font-size: var(--type-base);
+  color: var(--color-text);
+}
+.quota-card-email {
+  font-size: var(--type-xs);
+  color: var(--color-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 250px;
+}
+.quota-card-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.quota-card-actions .button {
+  font-size: var(--type-xs);
+  padding: 4px 10px;
+  min-height: 28px;
+}
+
+/* 标签样式 */
+.quota-plan-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.quota-plan-free {
+  background: var(--color-subtle);
+  color: var(--color-muted);
+  border: 1px solid var(--color-border);
+}
+.quota-plan-plus {
+  background: #eff6ff;
+  color: #2563eb;
+  border: 1px solid #bfdbfe;
+}
+.quota-plan-team {
+  background: #fefce8;
+  color: #ca8a04;
+  border: 1px solid #fef08a;
+}
+
+.quota-health-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 550;
+}
+.quota-health-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.health-fresh {
+  background: var(--color-success-bg);
+  color: var(--color-success);
+  border: 1px solid rgba(22, 163, 74, 0.2);
+}
+.health-fresh::before {
+  background: var(--color-success);
+  box-shadow: 0 0 0 2px rgba(22, 163, 74, 0.2);
+}
+.health-warning {
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  border: 1px solid rgba(202, 138, 4, 0.2);
+}
+.health-warning::before {
+  background: var(--color-warning);
+}
+.health-error {
+  background: var(--color-error-bg);
+  color: var(--color-error);
+  border: 1px solid rgba(220, 38, 38, 0.2);
+}
+.health-error::before {
+  background: var(--color-error);
+}
+
+/* 核心能力额度进度条盒子 */
+.quota-metrics-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.quota-metric-box {
+  background: var(--color-subtle);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.quota-metric-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.quota-metric-label {
+  font-size: var(--type-sm);
+  font-weight: 600;
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.quota-metric-amount {
+  font-size: var(--type-base);
+  font-weight: 700;
+  color: var(--color-text);
+  font-variant-numeric: tabular-nums;
+}
+.quota-metric-amount.is-zero {
+  color: var(--color-error);
+}
+
+/* 进度条轨道与填充 */
+.quota-bar-track {
+  width: 100%;
+  height: 8px;
+  background: rgba(120, 120, 128, 0.14);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  position: relative;
+}
+.quota-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  transition: width 0.4s ease;
+}
+.quota-bar-fill.bar-success {
+  background: linear-gradient(90deg, #22c55e, #16a34a);
+}
+.quota-bar-fill.bar-warning {
+  background: linear-gradient(90deg, #f59e0b, #d97706);
+}
+.quota-bar-fill.bar-error {
+  background: linear-gradient(90deg, #ef4444, #dc2626);
+}
+
+.quota-metric-sub {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--type-xs);
+  color: var(--color-muted);
+}
+.quota-reset-text {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.quota-status-tag {
+  font-weight: 550;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.tag-success {
+  color: var(--color-success);
+  background: var(--color-success-bg);
+}
+.tag-warning {
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+}
+.tag-error {
+  color: var(--color-error);
+  background: var(--color-error-bg);
+}
+
+/* 附加能力胶囊 */
+.quota-capsules-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.quota-capsule-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  padding: 3px 10px;
+  font-size: var(--type-xs);
+}
+.quota-capsule-icon { font-size: 12px; }
+.quota-capsule-name { color: var(--color-muted); }
+.quota-capsule-num { font-weight: 600; color: var(--color-text); }
+
+/* 卡片底部 */
+.quota-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+  font-size: var(--type-xs);
+  color: var(--color-muted);
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* 表格模式 Mini 进度条 */
+.quota-mini-track {
+  width: 100%;
+  height: 4px;
+  background: rgba(120, 120, 128, 0.14);
+  border-radius: var(--radius-pill);
+  overflow: hidden;
+  margin-top: 4px;
+  margin-bottom: 2px;
+}
+.quota-mini-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  transition: width 0.3s ease;
+}
+.quota-mini-fill.is-success { background: #16a34a; }
+.quota-mini-fill.is-warning { background: #d97706; }
+.quota-mini-fill.is-error { background: #dc2626; }
+
+
+/* Per-account model probing */
+.account-cell-lines[data-tone='success'] .account-cell-primary { color: var(--color-success); }
+.model-chip-section { margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--color-border); }
+.model-chip-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex-wrap: wrap; }
+.model-chip-title { display: flex; align-items: baseline; gap: var(--space-2); flex-wrap: wrap; font-size: var(--type-xs); }
+.model-chip-counts { color: var(--color-muted); }
+.model-chip-actions { display: flex; gap: var(--space-1); }
+.model-chip-actions .button { padding: 2px 8px; font-size: var(--type-xs); }
+.model-chip-list { list-style: none; margin: var(--space-2) 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.model-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; padding: 2px 8px; border: 1px solid var(--color-border); border-radius: var(--radius-pill); background: var(--color-subtle); color: var(--color-muted); font-size: var(--type-xs); line-height: 1.6; cursor: default; }
+.model-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.model-chip-mark { font-weight: 600; }
+.model-chip[data-kind='verified'] { color: var(--color-success); border-color: currentColor; background: var(--color-success-bg, transparent); }
+.model-chip[data-kind='unusable'] { color: var(--color-error); border-color: currentColor; background: var(--color-error-bg, transparent); text-decoration: line-through; text-decoration-thickness: 1px; }
+.model-chip[data-kind='unusable'] .model-chip-mark { text-decoration: none; }
+.model-chip[data-kind='error'] { color: var(--color-warning); border-color: currentColor; background: var(--color-warning-bg, transparent); }
+.model-chip[data-kind='probing'] { color: var(--color-text, inherit); border-style: dashed; animation: model-chip-pulse 1.2s ease-in-out infinite; }
+@keyframes model-chip-pulse { 50% { opacity: 0.45; } }
+@media (prefers-reduced-motion: reduce) { .model-chip[data-kind='probing'] { animation: none; } }
+.model-chip-more { margin-top: var(--space-2); padding: 2px 8px; font-size: var(--type-xs); }
+.model-chip-status { margin-top: var(--space-2); font-size: var(--type-xs); color: var(--color-muted); }
+.model-chip-status[data-state='stopped'] { color: var(--color-warning); }

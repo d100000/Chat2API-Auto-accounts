@@ -122,7 +122,8 @@ class ConcurrencyStore:
                     raise OSError
                 fd, temporary = tempfile.mkstemp(prefix=".account-concurrency-", dir=self.path.parent)
                 with os.fdopen(fd, "w") as handle:
-                    os.fchmod(handle.fileno(), 0o600)
+                    if hasattr(os, "fchmod"):  # Not available on Windows
+                        os.fchmod(handle.fileno(), 0o600)
                     json.dump(document, handle, separators=(",", ":"))
                     handle.flush(); os.fsync(handle.fileno())
                 os.replace(temporary, self.path)
